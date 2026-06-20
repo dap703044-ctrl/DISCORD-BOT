@@ -49,7 +49,7 @@ START_TIME = datetime.now()
 BOT_OWNER_IDS = [int(id) for id in os.getenv("BOT_OWNER_IDS", "").split(",") if id]
 
 # =============================================================================
-# DATABASE - ULTRA OPTIMIZED
+# DATABASE
 # =============================================================================
 
 DB_PATH = "bot_data.db"
@@ -67,7 +67,6 @@ class Database:
         return self
     
     def _init_tables(self):
-        # Guilds
         self.cursor.execute('''CREATE TABLE IF NOT EXISTS guilds (
             id INTEGER PRIMARY KEY,
             name TEXT,
@@ -86,7 +85,6 @@ class Database:
             updated_at TEXT
         )''')
         
-        # Members
         self.cursor.execute('''CREATE TABLE IF NOT EXISTS members (
             user_id INTEGER,
             guild_id INTEGER,
@@ -108,7 +106,6 @@ class Database:
             PRIMARY KEY (user_id, guild_id)
         )''')
         
-        # Economy
         self.cursor.execute('''CREATE TABLE IF NOT EXISTS economy (
             user_id INTEGER,
             guild_id INTEGER,
@@ -121,7 +118,6 @@ class Database:
             PRIMARY KEY (user_id, guild_id)
         )''')
         
-        # Shop Items
         self.cursor.execute('''CREATE TABLE IF NOT EXISTS shop_items (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             guild_id INTEGER,
@@ -133,7 +129,6 @@ class Database:
             stock INTEGER DEFAULT -1
         )''')
         
-        # Country Game Scores
         self.cursor.execute('''CREATE TABLE IF NOT EXISTS country_scores (
             user_id INTEGER,
             guild_id INTEGER,
@@ -143,7 +138,6 @@ class Database:
             PRIMARY KEY (user_id, guild_id)
         )''')
         
-        # Warnings
         self.cursor.execute('''CREATE TABLE IF NOT EXISTS warnings (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER,
@@ -156,7 +150,6 @@ class Database:
             severity INTEGER DEFAULT 1
         )''')
         
-        # Global Bans
         self.cursor.execute('''CREATE TABLE IF NOT EXISTS global_bans (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER,
@@ -167,7 +160,6 @@ class Database:
             is_active INTEGER DEFAULT 1
         )''')
         
-        # Admins (per-guild)
         self.cursor.execute('''CREATE TABLE IF NOT EXISTS guild_admins (
             user_id INTEGER,
             guild_id INTEGER,
@@ -176,7 +168,6 @@ class Database:
             PRIMARY KEY (user_id, guild_id)
         )''')
         
-        # Events
         self.cursor.execute('''CREATE TABLE IF NOT EXISTS events (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             guild_id INTEGER,
@@ -193,7 +184,6 @@ class Database:
             updated_at TEXT
         )''')
         
-        # Announcements
         self.cursor.execute('''CREATE TABLE IF NOT EXISTS announcements (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             guild_id INTEGER,
@@ -259,7 +249,6 @@ def get_economy(user_id, guild_id):
     return result
 
 def is_admin(user_id, guild_id):
-    # Check if user is bot owner
     if user_id in BOT_OWNER_IDS:
         return True
     result = db.fetchone("SELECT * FROM guild_admins WHERE user_id = ? AND guild_id = ?", (user_id, guild_id))
@@ -291,7 +280,7 @@ def add_shop_item(guild_id, name, description, price, role_id=None, emoji=None):
     db.commit()
 
 # =============================================================================
-# UI COMPONENTS - ADVANCED
+# UI COMPONENTS
 # =============================================================================
 
 class ConfirmView(View):
@@ -311,40 +300,59 @@ class ConfirmView(View):
         self.stop()
         await interaction.response.send_message("❌ Cancelled!", ephemeral=True)
 
-class PaginationView(View):
-    def __init__(self, items, items_per_page=5, timeout=120):
+class ShopView(View):
+    def __init__(self, items, guild_id, user_id, timeout=120):
         super().__init__(timeout=timeout)
         self.items = items
-        self.items_per_page = items_per_page
-        self.current_page = 0
-        self.total_pages = (len(items) + items_per_page - 1) // items_per_page if items else 1
+        self.guild_id = guild_id
+        self.user_id = user_id
+        self.selected_item = None
+        
+        # Create select options dynamically
+        options = []
+        for item in items[:25]:
+            options.append(SelectOption(
+                label=item['name'][:100],
+                value=str(item['id']),
+                description=f"💰 {item['price']} coins"
+            ))
+        
+        if options:
+            self.select = Select(placeholder="Select an item to buy...", options=options)
+            self.select.callback = self.select_callback
+            self.add_item(self.select)
     
-    def get_page(self):
-        start = self.current_page * self.items_per_page
-        end = start + self.items_per_page
-        return self.items[start:end] if self.items else []
+    async def select_callback(self, interaction: Interaction):
+        self.selected_item = int(self.select.values[0])
+        await interaction.response.send_message("✅ Item selected!", ephemeral=True)
     
-    @nextcord.ui.button(label="◀️", style=ButtonStyle.secondary)
-    async def previous(self, button, interaction):
-        if self.current_page > 0:
-            self.current_page -= 1
-            await self.update_message(interaction)
-    
-    @nextcord.ui.button(label="📄", style=ButtonStyle.primary, disabled=True)
-    async def page_indicator(self, button, interaction):
-        pass
-    
-    @nextcord.ui.button(label="▶️", style=ButtonStyle.secondary)
-    async def next(self, button, interaction):
-        if self.current_page < self.total_pages - 1:
-            self.current_page += 1
-            await self.update_message(interaction)
-    
-    async def update_message(self, interaction):
-        await interaction.response.edit_message(content=self.get_content(), view=self)
-    
-    def get_content(self):
-        return f"Page {self.current_page + 1}/{self.total_pages}"
+    @nextcord.ui.button(label="🛒 Buy Selected", style=ButtonStyle.success, emoji="🛒")
+    async def buy_item(self, button, interaction):
+        if not self.selected_item:
+            await interaction.response.send_message("❌ Select an item first!", ephemeral=True)
+            return
+        
+        item = db.fetchone("SELECT * FROM shop_items WHERE id = ? AND guild_id = ?", (self.selected_item, self.guild_id))
+        if not item:
+            await interaction.response.send_message("❌ Item not found!", ephemeral=True)
+            return
+        
+        economy = get_economy(self.user_id, self.guild_id)
+        if economy['coins'] < item['price']:
+            await interaction.response.send_message(f"❌ You need **{item['price']}** coins! You only have {economy['coins']}.", ephemeral=True)
+            return
+        
+        remove_coins(self.user_id, self.guild_id, item['price'])
+        
+        if item['role_id']:
+            guild = interaction.guild
+            role = guild.get_role(item['role_id'])
+            if role:
+                member = guild.get_member(self.user_id)
+                await member.add_roles(role)
+        
+        embed = Embed(title="✅ Purchase Successful!", description=f"You bought **{item['name']}** for {item['price']} coins!", color=0x57F287)
+        await interaction.response.send_message(embed=embed)
 
 class CountryGuessView(View):
     def __init__(self, country_data, timeout=30):
@@ -397,52 +405,8 @@ class CountryGuessModal(Modal):
             embed = Embed(title="❌ Wrong!", description=f"It was **{self.country_data['name']}**! 🇷🇴\nBetter luck next time!", color=0xED4245)
             await interaction.response.send_message(embed=embed)
 
-class ShopView(View):
-    def __init__(self, items, guild_id, user_id, timeout=120):
-        super().__init__(timeout=timeout)
-        self.items = items
-        self.guild_id = guild_id
-        self.user_id = user_id
-        self.selected_item = None
-    
-    @nextcord.ui.select(placeholder="Select an item to buy...", options=[
-        SelectOption(label=item['name'], value=str(item['id']), description=f"💰 {item['price']} coins")
-        for item in items[:25]
-    ])
-    async def select_item(self, select, interaction):
-        self.selected_item = int(select.values[0])
-        await interaction.response.send_message(f"Selected item!", ephemeral=True)
-    
-    @nextcord.ui.button(label="🛒 Buy Selected", style=ButtonStyle.success, emoji="🛒")
-    async def buy_item(self, button, interaction):
-        if not self.selected_item:
-            await interaction.response.send_message("❌ Select an item first!", ephemeral=True)
-            return
-        
-        item = db.fetchone("SELECT * FROM shop_items WHERE id = ? AND guild_id = ?", (self.selected_item, self.guild_id))
-        if not item:
-            await interaction.response.send_message("❌ Item not found!", ephemeral=True)
-            return
-        
-        economy = get_economy(self.user_id, self.guild_id)
-        if economy['coins'] < item['price']:
-            await interaction.response.send_message(f"❌ You need **{item['price']}** coins! You only have {economy['coins']}.", ephemeral=True)
-            return
-        
-        remove_coins(self.user_id, self.guild_id, item['price'])
-        
-        if item['role_id']:
-            guild = interaction.guild
-            role = guild.get_role(item['role_id'])
-            if role:
-                member = guild.get_member(self.user_id)
-                await member.add_roles(role)
-        
-        embed = Embed(title="✅ Purchase Successful!", description=f"You bought **{item['name']}** for {item['price']} coins!", color=0x57F287)
-        await interaction.response.send_message(embed=embed)
-
 # =============================================================================
-# FUNCTIONS
+# COUNTRIES DATA
 # =============================================================================
 
 COUNTRIES = [
@@ -523,28 +487,11 @@ async def on_ready():
     update_status.start()
 
 @bot.event
-async def on_member_join(member):
-    guild_data = get_guild(member.guild.id)
-    if guild_data["welcome_channel"]:
-        channel = bot.get_channel(guild_data["welcome_channel"])
-        if channel:
-            embed = Embed(
-                title=f"🇷🇴 Welcome to {member.guild.name}!",
-                description=f"Salut {member.mention}!\n\n📢 Spune-ne de unde ești?\n🎮 Ce jocuri preferi?\n📖 Citește regulile în #reguli",
-                color=0xF1C40F,
-                timestamp=datetime.now()
-            )
-            embed.set_thumbnail(url=member.display_avatar.url)
-            embed.set_footer(text=f"Membru #{member.guild.member_count}")
-            await channel.send(embed=embed)
-
-@bot.event
 async def on_message(message):
     if message.author.bot:
         return
     
     if message.guild:
-        # XP System
         xp_amount = random.randint(5, 25)
         member_data = get_member(message.author.id, message.guild.id)
         new_xp = member_data['xp'] + xp_amount
@@ -578,27 +525,8 @@ async def update_status():
     ]
     await bot.change_presence(activity=nextcord.Game(name=random.choice(statuses)))
 
-@tasks.loop(minutes=30)
-async def country_game():
-    """Automatically send country guess game every 30 minutes"""
-    country = random.choice(COUNTRIES)
-    for guild in bot.guilds:
-        guild_data = get_guild(guild.id)
-        channel_id = guild_data.get("announcement_channel")
-        if channel_id:
-            channel = bot.get_channel(channel_id)
-            if channel:
-                embed = Embed(
-                    title="🌍 Country Guess Game!",
-                    description=f"**{country['flag']}** Which country is this flag from?\n\nClick the button below to guess!",
-                    color=0x5865F2,
-                    timestamp=datetime.now()
-                )
-                view = CountryGuessView(country)
-                await channel.send(embed=embed, view=view)
-
 # =============================================================================
-# SLASH COMMANDS - ADMIN SYSTEM
+# SLASH COMMANDS - ADMIN
 # =============================================================================
 
 @bot.slash_command(name="add_admin", description="👑 Add a guild admin (Owner only)")
@@ -607,7 +535,6 @@ async def add_admin(interaction: Interaction, user: Member = SlashOption(descrip
     if user == interaction.user:
         await interaction.response.send_message(embed=Embed(title="❌ Error", description="You can't add yourself!", color=0xED4245))
         return
-    
     add_admin(user.id, interaction.guild_id, interaction.user.id)
     embed = Embed(title="✅ Admin Added", description=f"{user.mention} is now a guild admin!", color=0x57F287)
     await interaction.response.send_message(embed=embed)
@@ -618,7 +545,6 @@ async def remove_admin(interaction: Interaction, user: Member = SlashOption(desc
     if user == interaction.user:
         await interaction.response.send_message(embed=Embed(title="❌ Error", description="You can't remove yourself!", color=0xED4245))
         return
-    
     remove_admin(user.id, interaction.guild_id)
     embed = Embed(title="✅ Admin Removed", description=f"{user.mention} is no longer a guild admin!", color=0x57F287)
     await interaction.response.send_message(embed=embed)
@@ -628,7 +554,6 @@ async def remove_admin(interaction: Interaction, user: Member = SlashOption(desc
 # =============================================================================
 
 def is_guild_admin(interaction):
-    """Check if user is guild admin or bot owner"""
     if interaction.user.id in BOT_OWNER_IDS:
         return True
     return is_admin(interaction.user.id, interaction.guild_id)
@@ -673,12 +598,10 @@ async def warn(interaction: Interaction, member: Member = SlashOption(descriptio
     if not is_guild_admin(interaction):
         await interaction.response.send_message(embed=Embed(title="❌ Permission Denied", description="Only guild admins can use this!", color=0xED4245))
         return
-    
     db.execute("INSERT INTO warnings (user_id, guild_id, moderator_id, reason, timestamp) VALUES (?, ?, ?, ?, ?)",
               (member.id, interaction.guild_id, interaction.user.id, reason, datetime.now().isoformat()))
     db.execute("UPDATE members SET warnings = warnings + 1 WHERE user_id = ? AND guild_id = ?", (member.id, interaction.guild_id))
     db.commit()
-    
     embed = Embed(title="⚠️ Warning Issued", description=f"{member.mention} was warned\n**Reason:** {reason}", color=0xFEE75C)
     await interaction.response.send_message(embed=embed)
 
@@ -687,12 +610,10 @@ async def view_warnings(interaction: Interaction, member: Member = SlashOption(d
     if not is_guild_admin(interaction):
         await interaction.response.send_message(embed=Embed(title="❌ Permission Denied", description="Only guild admins can use this!", color=0xED4245))
         return
-    
     warnings = db.fetchall("SELECT * FROM warnings WHERE user_id = ? AND guild_id = ? AND is_active = 1 ORDER BY timestamp DESC", (member.id, interaction.guild_id))
     if not warnings:
         embed = Embed(title="✅ No Warnings", description=f"{member.mention} has no warnings", color=0x57F287)
         return await interaction.response.send_message(embed=embed)
-    
     embed = Embed(title=f"⚠️ Warnings for {member.display_name}", description=f"Total: {len(warnings)}", color=0xFEE75C)
     for i, w in enumerate(warnings[:5], 1):
         mod = interaction.guild.get_member(w['moderator_id'])
@@ -1000,7 +921,6 @@ async def add_shop_item(interaction: Interaction, name: str = SlashOption(descri
     if not is_guild_admin(interaction):
         await interaction.response.send_message(embed=Embed(title="❌ Permission Denied", description="Only guild admins can use this!", color=0xED4245))
         return
-    
     add_shop_item(interaction.guild_id, name, description, price, None, emoji or "🛒")
     embed = Embed(title="✅ Shop Item Added", description=f"Added **{name}** for {price} coins!", color=0x57F287)
     await interaction.response.send_message(embed=embed)
