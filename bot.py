@@ -1294,7 +1294,7 @@ async def add_admin(interaction: Interaction, user: Member = SlashOption(descrip
 
 @bot.slash_command(name="remove_admin", description="👑 Remove guild admin (Admin only)")
 @commands.has_permissions(administrator=True)
-async def remove_admin(interaction: Interaction, user: Member = SlashOption(description("User", required=True)):
+async def remove_admin(interaction: Interaction, user: Member = SlashOption(description="User", required=True)):
     if user == interaction.user:
         await interaction.response.send_message(embed=Embed(title="❌ Error", description="You can't remove yourself!", color=0xED4245))
         return
