@@ -905,7 +905,7 @@ async def group_add_admin(interaction: Interaction, user: Member = SlashOption(d
     await interaction.response.send_message(embed=embed)
 
 @bot.slash_command(name="group_remove_admin", description="🛡️ Remove Group Administrator (Group Management only)")
-async def group_remove_admin(interaction: Interaction, user: Member = SlashOption(description("User to remove", required=True)):
+async def group_remove_admin(interaction: Interaction, user: Member = SlashOption(description="User to remove", required=True)):
     if not is_group_manager(interaction.user.id):
         await interaction.response.send_message(embed=Embed(title="❌ Permission Denied", description="Only Group Managers can use this!", color=0xED4245))
         return
