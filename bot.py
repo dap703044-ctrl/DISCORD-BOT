@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """
 🇷🇴 ROMANIAN OVERSIGHT BOT - PROFESSIONAL ENTERPRISE EDITION
-Version: 8.0.0
+Version: 9.0.0
 For 3000+ Member Servers
 Features:
 - Advanced Ticket System with Panels, Transcripts, Claims
 - Group Management System (Top Level)
 - Group Administrator System (Second Level)
-- Global Ranking System
+- Global Ranking System (Manual Sync)
+- Server Role Sync System
 - Full Economy System
 - 100+ Professional Commands
 - Auto-Recovery & Backup
@@ -61,7 +62,7 @@ if not TOKEN:
     print("❌ DISCORD_TOKEN not set!")
     sys.exit(1)
 
-VERSION = "8.0.0"
+VERSION = "9.0.0"
 START_TIME = datetime.now()
 
 # =============================================================================
@@ -253,15 +254,6 @@ class Database:
             created_at TEXT,
             updated_at TEXT,
             PRIMARY KEY (user_id, guild_id)
-        )''')
-        
-        # Global Ranks
-        self.cursor.execute('''CREATE TABLE IF NOT EXISTS global_ranks (
-            user_id INTEGER PRIMARY KEY,
-            rank TEXT DEFAULT 'Member',
-            assigned_by INTEGER,
-            assigned_at TEXT,
-            reason TEXT
         )''')
         
         # Group Managers
@@ -480,19 +472,6 @@ def remove_coins(user_id, guild_id, amount):
 def log_audit(guild_id, action, moderator_id, target_id, details):
     db.execute("INSERT INTO audit_log (guild_id, action, moderator_id, target_id, details, timestamp) VALUES (?, ?, ?, ?, ?, ?)",
                (guild_id, action, moderator_id, target_id, details, datetime.now().isoformat()))
-    db.commit()
-
-def get_global_rank(user_id):
-    result = db.fetchone("SELECT * FROM global_ranks WHERE user_id = ?", (user_id,))
-    if not result:
-        db.execute("INSERT INTO global_ranks (user_id) VALUES (?)", (user_id,))
-        db.commit()
-        return {"rank": "Member", "assigned_by": None, "assigned_at": None, "reason": None}
-    return result
-
-def set_global_rank(user_id, rank, assigned_by, reason=None):
-    db.execute("UPDATE global_ranks SET rank = ?, assigned_by = ?, assigned_at = ?, reason = ? WHERE user_id = ?",
-               (rank, assigned_by, datetime.now().isoformat(), reason, user_id))
     db.commit()
 
 # =============================================================================
@@ -802,7 +781,8 @@ async def on_guild_join(guild: Guild):
                        f"**{len(bot.guilds)}** servers total\n"
                        f"Use `/help` for commands\n"
                        f"Use `/setup` to configure\n"
-                       f"Use `/ticket_panel` to create support system",
+                       f"Use `/ticket_panel` to create support system\n"
+                       f"Use `/sync_server` to sync roles for ranking!",
             color=0x5865F2,
             timestamp=datetime.now()
         )
@@ -952,91 +932,167 @@ async def group_list(interaction: Interaction):
     await interaction.response.send_message(embed=embed)
 
 # =============================================================================
-# GLOBAL RANKING COMMANDS (Group Management Only)
+# SERVER SYNC COMMANDS
 # =============================================================================
 
-@bot.slash_command(name="global_rank", description="🌍 Rank user across ALL servers (Group Management only)")
-async def global_rank(interaction: Interaction, user_id: str = SlashOption(description="User ID", required=True), rank: str = SlashOption(description="Rank", choices=["Group Management", "Group Administrator", "Member", "Newcomer"], required=True), reason: str = SlashOption(description="Reason", required=False)):
+@bot.slash_command(name="sync_server", description="🔄 Manually sync ALL roles from this server (Group Management only)")
+async def sync_server(interaction: Interaction):
     if not is_group_manager(interaction.user.id):
         await interaction.response.send_message(embed=Embed(title="❌ Permission Denied", description="Only Group Managers can use this!", color=0xED4245))
         return
     
-    await interaction.response.defer()
-    try:
-        user_id = int(user_id)
-        user = await bot.fetch_user(user_id)
-    except:
-        return await interaction.followup.send(embed=Embed(title="❌ Error", description="Invalid user ID!", color=0xED4245))
+    guild = interaction.guild
+    roles = []
     
-    set_global_rank(user_id, rank, interaction.user.id, reason)
+    for role in guild.roles:
+        if role.name != "@everyone":
+            roles.append({
+                "id": role.id,
+                "name": role.name,
+                "color": role.color.value,
+                "permissions": role.permissions.value
+            })
     
-    updated = 0
-    for guild in bot.guilds:
-        try:
-            member = await guild.fetch_member(user_id)
-            if member:
-                db.execute("UPDATE members SET global_rank = ? WHERE user_id = ? AND guild_id = ?", (rank, user_id, guild.id))
-                db.commit()
-                updated += 1
-        except:
-            pass
+    # Save to database
+    guild_data = get_guild(guild.id)
+    config = json.loads(guild_data['config']) if guild_data['config'] else {}
+    config["synced_roles"] = roles
+    db.execute("UPDATE guilds SET config = ? WHERE id = ?", (json.dumps(config), guild.id))
+    db.commit()
     
-    rank_data = RANKS.get(rank, {"color": 0x888888, "emoji": "👤"})
-    embed = Embed(title=f"{rank_data['emoji']} Global Rank Updated!", description=f"**User:** {user.mention}\n**Rank:** {rank}\n**Reason:** {reason or 'None'}\n**Updated:** {updated} servers", color=rank_data['color'], timestamp=datetime.now())
-    await interaction.followup.send(embed=embed)
-
-@bot.slash_command(name="global_rank_info", description="🌍 Check user's global rank")
-async def global_rank_info(interaction: Interaction, user_id: str = SlashOption(description="User ID", required=False)):
-    if not user_id:
-        user_id = str(interaction.user.id)
-    try:
-        user_id = int(user_id)
-        user = await bot.fetch_user(user_id)
-    except:
-        return await interaction.response.send_message(embed=Embed(title="❌ Error", description="Invalid user ID!", color=0xED4245))
+    embed = Embed(
+        title="🔄 Server Synced!",
+        description=f"Synced **{len(roles)}** roles from **{guild.name}**\n\nYou can now rank users using these roles from ANY server!",
+        color=0x57F287,
+        timestamp=datetime.now()
+    )
     
-    rank_data = get_global_rank(user_id)
-    rank_info = RANKS.get(rank_data['rank'], {"color": 0x888888, "emoji": "👤"})
-    embed = Embed(title=f"{rank_info['emoji']} Global Rank", color=rank_info['color'])
-    embed.set_thumbnail(url=user.display_avatar.url)
-    embed.add_field(name="User", value=f"{user.mention}", inline=False)
-    embed.add_field(name="Rank", value=f"**{rank_data['rank']}**", inline=True)
-    if rank_data['assigned_at']:
-        embed.add_field(name="Assigned", value=rank_data['assigned_at'], inline=True)
-    if rank_data['reason']:
-        embed.add_field(name="Reason", value=rank_data['reason'], inline=False)
+    # Show first 5 roles
+    role_list = ""
+    for role in roles[:5]:
+        role_list += f"• {role['name']}\n"
+    if len(roles) > 5:
+        role_list += f"*...and {len(roles) - 5} more*"
+    
+    embed.add_field(name="📋 Roles Synced", value=role_list, inline=False)
+    embed.set_footer(text=f"Server ID: {guild.id}")
+    
     await interaction.response.send_message(embed=embed)
 
-@bot.slash_command(name="global_rank_list", description="🌍 List all users with global ranks")
-async def global_rank_list(interaction: Interaction):
-    if not is_group_admin(interaction.user.id) and not is_group_manager(interaction.user.id):
+@bot.slash_command(name="list_servers", description="📋 List all synced servers (Group Management only)")
+async def list_servers(interaction: Interaction):
+    if not is_group_manager(interaction.user.id) and not is_group_admin(interaction.user.id):
         await interaction.response.send_message(embed=Embed(title="❌ Permission Denied", description="Only Group Management or Group Administrators can use this!", color=0xED4245))
         return
     
-    results = db.fetchall("SELECT * FROM global_ranks WHERE rank != 'Member' ORDER BY rank, assigned_at")
+    results = db.fetchall("SELECT id, name, config FROM guilds WHERE config != '{}' AND config IS NOT NULL")
     
     if not results:
-        await interaction.response.send_message(embed=Embed(title="📋 Global Ranks", description="No users with custom global ranks!", color=0x5865F2))
-        return
+        embed = Embed(title="📋 Synced Servers", description="No servers have been synced yet!\nUse `/sync_server` in a server to sync its roles.", color=0x5865F2)
+        return await interaction.response.send_message(embed=embed)
     
-    embed = Embed(title="📋 Global Ranks List", color=0x5865F2, timestamp=datetime.now())
+    embed = Embed(title="📋 Synced Servers", color=0x5865F2, timestamp=datetime.now())
     
-    for row in results[:20]:
-        try:
-            user = await bot.fetch_user(row['user_id'])
-            rank_data = RANKS.get(row['rank'], {"emoji": "👤"})
-            embed.add_field(
-                name=f"{rank_data['emoji']} {row['rank']}",
-                value=f"{user.mention} ({user.name})",
-                inline=True
-            )
-        except:
-            pass
-    
-    if len(results) > 20:
-        embed.set_footer(text=f"And {len(results) - 20} more users...")
+    for row in results:
+        config = json.loads(row['config'])
+        roles = config.get("synced_roles", [])
+        embed.add_field(
+            name=row['name'],
+            value=f"ID: `{row['id']}`\nRoles: {len(roles)}",
+            inline=False
+        )
     
     await interaction.response.send_message(embed=embed)
+
+@bot.slash_command(name="sync_list", description="📋 Show ALL synced roles from a server (Group Management only)")
+async def sync_list(interaction: Interaction, server_id: str = SlashOption(description="Server ID from /list_servers", required=True)):
+    if not is_group_manager(interaction.user.id) and not is_group_admin(interaction.user.id):
+        await interaction.response.send_message(embed=Embed(title="❌ Permission Denied", description="Only Group Management or Group Administrators can use this!", color=0xED4245))
+        return
+    
+    guild = bot.get_guild(int(server_id))
+    if not guild:
+        await interaction.response.send_message(embed=Embed(title="❌ Error", description="Server not found! Make sure the bot is still in the server.", color=0xED4245))
+        return
+    
+    guild_data = get_guild(int(server_id))
+    config = json.loads(guild_data['config']) if guild_data['config'] else {}
+    roles = config.get("synced_roles", [])
+    
+    if not roles:
+        embed = Embed(title="📋 Synced Roles", description=f"No roles synced from **{guild.name}**!\nUse `/sync_server` in that server first.", color=0x5865F2)
+        return await interaction.response.send_message(embed=embed)
+    
+    embed = Embed(title=f"📋 Synced Roles - {guild.name}", color=0x5865F2, timestamp=datetime.now())
+    
+    role_list = ""
+    for role in roles:
+        role_list += f"• {role['name']} (ID: `{role['id']}`)\n"
+    
+    embed.add_field(name=f"Total: {len(roles)} roles", value=role_list[:1024], inline=False)
+    
+    await interaction.response.send_message(embed=embed)
+
+# =============================================================================
+# RANK USER COMMAND
+# =============================================================================
+
+@bot.slash_command(name="rank_user", description="📊 Rank a user in ANY synced server (Group Management only)")
+async def rank_user(
+    interaction: Interaction, 
+    user_id: str = SlashOption(description="User ID to rank", required=True),
+    server_id: str = SlashOption(description="Server ID from /list_servers", required=True),
+    role_id: str = SlashOption(description="Role ID from /sync_list", required=True),
+    reason: str = SlashOption(description="Reason", required=False)
+):
+    if not is_group_manager(interaction.user.id):
+        await interaction.response.send_message(embed=Embed(title="❌ Permission Denied", description="Only Group Managers can use this!", color=0xED4245))
+        return
+    
+    # Get user
+    try:
+        user_id = int(user_id)
+        user = await bot.fetch_user(user_id)
+    except:
+        await interaction.response.send_message(embed=Embed(title="❌ Error", description="Invalid user ID!", color=0xED4245))
+        return
+    
+    # Get server
+    guild = bot.get_guild(int(server_id))
+    if not guild:
+        await interaction.response.send_message(embed=Embed(title="❌ Error", description="Server not found! Make sure the bot is still in the server.", color=0xED4245))
+        return
+    
+    # Get role
+    role = guild.get_role(int(role_id))
+    if not role:
+        await interaction.response.send_message(embed=Embed(title="❌ Error", description="Role not found in that server! Try re-syncing with `/sync_server`", color=0xED4245))
+        return
+    
+    # Get member
+    try:
+        member = await guild.fetch_member(user_id)
+        if not member:
+            await interaction.response.send_message(embed=Embed(title="❌ Error", description=f"{user.mention} is not in {guild.name}!", color=0xED4245))
+            return
+    except:
+        await interaction.response.send_message(embed=Embed(title="❌ Error", description=f"{user.mention} is not in {guild.name}!", color=0xED4245))
+        return
+    
+    # Assign role
+    try:
+        await member.add_roles(role, reason=reason or "No reason")
+        
+        embed = Embed(
+            title="🎖️ Role Assigned!",
+            description=f"**User:** {user.mention}\n**Server:** {guild.name}\n**Role:** {role.mention}\n**Reason:** {reason or 'No reason'}",
+            color=role.color,
+            timestamp=datetime.now()
+        )
+        embed.set_footer(text=f"RANKED BY {interaction.user.display_name}")
+        await interaction.response.send_message(embed=embed)
+    except Exception as e:
+        await interaction.response.send_message(embed=Embed(title="❌ Error", description=f"Failed to assign role: {e}", color=0xED4245))
 
 # =============================================================================
 # TICKET SYSTEM
@@ -1785,7 +1841,8 @@ async def ping(interaction: Interaction):
 async def help_command(interaction: Interaction):
     embed = Embed(title="📖 Commands", color=0x5865F2, timestamp=datetime.now())
     embed.add_field(name="👑 Group Management", value="/group_add_manager, /group_remove_manager, /group_add_admin, /group_remove_admin, /group_list", inline=False)
-    embed.add_field(name="🌍 Global", value="/global_rank, /global_rank_info, /global_rank_list, /global_ban, /global_unban, /global_kick, /global_announce, /global_dm", inline=False)
+    embed.add_field(name="🔄 Server Sync", value="/sync_server, /list_servers, /sync_list, /rank_user", inline=False)
+    embed.add_field(name="🌍 Global", value="/global_ban, /global_unban, /global_kick, /global_announce, /global_dm", inline=False)
     embed.add_field(name="🎫 Tickets", value="/ticket_panel, /ticket_setup, /ticket_close", inline=False)
     embed.add_field(name="🎁 Giveaways", value="/giveaway_start, /giveaway_end", inline=False)
     embed.add_field(name="🛡️ Admin", value="/add_admin, /remove_admin, /admins, /ban, /kick, /clear, /warn, /warnings, /mute, /audit", inline=False)
@@ -1815,15 +1872,12 @@ async def rank(interaction: Interaction, member: Member = SlashOption(descriptio
     if not member:
         member = interaction.user
     data = get_member(member.id, interaction.guild_id)
-    global_rank = get_global_rank(member.id)
-    rank_info = RANKS.get(global_rank['rank'], {"color": 0x888888, "emoji": "👤"})
     embed = Embed(title=f"👤 {member.display_name}'s Profile", color=member.color.value if member.color else 0x5865F2)
     embed.set_thumbnail(url=member.display_avatar.url)
     embed.add_field(name="📊 Level", value=f"**{data['level']}**", inline=True)
     embed.add_field(name="⭐ XP", value=f"**{data['xp']}**", inline=True)
     embed.add_field(name="💬 Messages", value=f"**{data['messages']}**", inline=True)
     embed.add_field(name="⚠️ Warnings", value=f"**{data['warnings']}**", inline=True)
-    embed.add_field(name=f"{rank_info['emoji']} Global Rank", value=f"**{global_rank['rank']}**", inline=True)
     await interaction.response.send_message(embed=embed)
 
 @bot.slash_command(name="leaderboard", description="🏆 Level leaderboard")
@@ -1833,10 +1887,8 @@ async def leaderboard(interaction: Interaction):
     for i, row in enumerate(results, 1):
         user = interaction.guild.get_member(row['user_id'])
         if user:
-            global_rank = get_global_rank(row['user_id'])
-            rank_info = RANKS.get(global_rank['rank'], {"emoji": "👤"})
             emoji = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else f"#{i}"
-            embed.add_field(name=f"{emoji} {user.display_name} {rank_info['emoji']}", value=f"Level **{row['level']}** - {row['xp']} XP", inline=False)
+            embed.add_field(name=f"{emoji} {user.display_name}", value=f"Level **{row['level']}** - {row['xp']} XP", inline=False)
     await interaction.response.send_message(embed=embed)
 
 @bot.slash_command(name="setup", description="⚙️ Setup bot (Admin only)")
