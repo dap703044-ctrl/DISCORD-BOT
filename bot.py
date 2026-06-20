@@ -5,7 +5,8 @@ Version: 8.0.0
 For 3000+ Member Servers
 Features:
 - Advanced Ticket System with Panels, Transcripts, Claims
-- Group Management System
+- Group Management System (Top Level)
+- Group Administrator System (Second Level)
 - Global Ranking System
 - Full Economy System
 - 100+ Professional Commands
@@ -14,6 +15,7 @@ Features:
 - Audit Logging
 - Welcome System
 - Leveling System
+- ALPHA SYSTEM (TommyTactical - Ultimate Power)
 - And Much More!
 """
 
@@ -61,9 +63,135 @@ if not TOKEN:
 
 VERSION = "8.0.0"
 START_TIME = datetime.now()
+
+# =============================================================================
+# ALPHA / BIG BOSS SYSTEM
+# =============================================================================
+
+# THE ALPHA - Ultimate authority (TommyTactical)
+ALPHA_USER_ID = 922061012486725632  # TommyTactical - THE BIG BOSS
 BOT_OWNER_IDS = [int(id) for id in os.getenv("BOT_OWNER_IDS", "").split(",") if id]
+
+# Add Alpha to owner list automatically
+if ALPHA_USER_ID not in BOT_OWNER_IDS:
+    BOT_OWNER_IDS.append(ALPHA_USER_ID)
+
 BACKUP_INTERVAL = 3600
 RECOVERY_FILE = "recovery_code.txt"
+
+def is_alpha(user_id: int) -> bool:
+    """Check if user is THE ALPHA (TommyTactical)"""
+    return user_id == ALPHA_USER_ID
+
+def is_owner_or_alpha(user_id: int) -> bool:
+    """Check if user is bot owner OR THE ALPHA"""
+    return user_id in BOT_OWNER_IDS or is_alpha(user_id)
+
+# =============================================================================
+# GROUP MANAGEMENT SYSTEM
+# =============================================================================
+
+class GroupManagement:
+    """Manages group permissions across all servers"""
+    
+    @staticmethod
+    def is_group_manager(user_id: int) -> bool:
+        """Check if user is a Group Manager"""
+        if is_alpha(user_id):
+            return True
+        if user_id in BOT_OWNER_IDS:
+            return True
+        result = db.fetchone("SELECT * FROM group_managers WHERE user_id = ?", (user_id,))
+        return result is not None
+    
+    @staticmethod
+    def is_group_admin(user_id: int) -> bool:
+        """Check if user is a Group Administrator"""
+        if is_alpha(user_id):
+            return True
+        if user_id in BOT_OWNER_IDS:
+            return True
+        if GroupManagement.is_group_manager(user_id):
+            return True
+        result = db.fetchone("SELECT * FROM group_admins WHERE user_id = ?", (user_id,))
+        return result is not None
+    
+    @staticmethod
+    def add_group_manager(user_id: int, added_by: int, reason: str = None):
+        db.execute("INSERT OR IGNORE INTO group_managers (user_id, added_by, reason, timestamp) VALUES (?, ?, ?, ?)",
+                   (user_id, added_by, reason, datetime.now().isoformat()))
+        db.commit()
+        log_audit(None, "add_group_manager", added_by, user_id, f"Added as Group Manager: {reason}")
+    
+    @staticmethod
+    def remove_group_manager(user_id: int):
+        db.execute("DELETE FROM group_managers WHERE user_id = ?", (user_id,))
+        db.commit()
+        log_audit(None, "remove_group_manager", None, user_id, "Removed as Group Manager")
+    
+    @staticmethod
+    def add_group_admin(user_id: int, added_by: int, reason: str = None):
+        db.execute("INSERT OR IGNORE INTO group_admins (user_id, added_by, reason, timestamp) VALUES (?, ?, ?, ?)",
+                   (user_id, added_by, reason, datetime.now().isoformat()))
+        db.commit()
+        log_audit(None, "add_group_admin", added_by, user_id, f"Added as Group Administrator: {reason}")
+    
+    @staticmethod
+    def remove_group_admin(user_id: int):
+        db.execute("DELETE FROM group_admins WHERE user_id = ?", (user_id,))
+        db.commit()
+        log_audit(None, "remove_group_admin", None, user_id, "Removed as Group Administrator")
+    
+    @staticmethod
+    def get_all_group_managers():
+        return db.fetchall("SELECT * FROM group_managers ORDER BY timestamp")
+    
+    @staticmethod
+    def get_all_group_admins():
+        return db.fetchall("SELECT * FROM group_admins ORDER BY timestamp")
+
+# =============================================================================
+# RECOVERY SYSTEM
+# =============================================================================
+
+class RecoverySystem:
+    def __init__(self):
+        self.recovery_code = self.generate_recovery_code()
+        self.backup_path = "data_backup"
+        self.last_backup = None
+    
+    def generate_recovery_code(self):
+        code = hashlib.sha256(f"{datetime.now().isoformat()}{random.randint(1, 999999)}".encode()).hexdigest()[:16]
+        with open(RECOVERY_FILE, "w") as f:
+            f.write(code)
+        return code
+    
+    def create_backup(self):
+        if not os.path.exists(self.backup_path):
+            os.makedirs(self.backup_path)
+        backup_name = f"backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db"
+        backup_file = os.path.join(self.backup_path, backup_name)
+        try:
+            shutil.copy2(DB_PATH, backup_file)
+            backups = sorted([f for f in os.listdir(self.backup_path) if f.endswith('.db')])
+            for old_backup in backups[:-10]:
+                os.remove(os.path.join(self.backup_path, old_backup))
+            return True
+        except:
+            return False
+    
+    def restore_backup(self):
+        try:
+            backups = sorted([f for f in os.listdir(self.backup_path) if f.endswith('.db')])
+            if backups:
+                latest = os.path.join(self.backup_path, backups[-1])
+                shutil.copy2(latest, DB_PATH)
+                return True
+        except:
+            return False
+        return False
+
+recovery = RecoverySystem()
 
 # =============================================================================
 # DATABASE
@@ -138,6 +266,14 @@ class Database:
         
         # Group Managers
         self.cursor.execute('''CREATE TABLE IF NOT EXISTS group_managers (
+            user_id INTEGER PRIMARY KEY,
+            added_by INTEGER,
+            reason TEXT,
+            timestamp TEXT
+        )''')
+        
+        # Group Administrators
+        self.cursor.execute('''CREATE TABLE IF NOT EXISTS group_admins (
             user_id INTEGER PRIMARY KEY,
             added_by INTEGER,
             reason TEXT,
@@ -306,49 +442,6 @@ class Database:
 db = Database().connect()
 
 # =============================================================================
-# RECOVERY SYSTEM
-# =============================================================================
-
-class RecoverySystem:
-    def __init__(self):
-        self.recovery_code = self.generate_recovery_code()
-        self.backup_path = "data_backup"
-        self.last_backup = None
-    
-    def generate_recovery_code(self):
-        code = hashlib.sha256(f"{datetime.now().isoformat()}{random.randint(1, 999999)}".encode()).hexdigest()[:16]
-        with open(RECOVERY_FILE, "w") as f:
-            f.write(code)
-        return code
-    
-    def create_backup(self):
-        if not os.path.exists(self.backup_path):
-            os.makedirs(self.backup_path)
-        backup_name = f"backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db"
-        backup_file = os.path.join(self.backup_path, backup_name)
-        try:
-            shutil.copy2(DB_PATH, backup_file)
-            backups = sorted([f for f in os.listdir(self.backup_path) if f.endswith('.db')])
-            for old_backup in backups[:-10]:
-                os.remove(os.path.join(self.backup_path, old_backup))
-            return True
-        except:
-            return False
-    
-    def restore_backup(self):
-        try:
-            backups = sorted([f for f in os.listdir(self.backup_path) if f.endswith('.db')])
-            if backups:
-                latest = os.path.join(self.backup_path, backups[-1])
-                shutil.copy2(latest, DB_PATH)
-                return True
-        except:
-            return False
-        return False
-
-recovery = RecoverySystem()
-
-# =============================================================================
 # DATABASE HELPERS
 # =============================================================================
 
@@ -375,20 +468,6 @@ def get_economy(user_id, guild_id):
         db.commit()
         return get_economy(user_id, guild_id)
     return result
-
-def is_group_manager(user_id):
-    if user_id in BOT_OWNER_IDS:
-        return True
-    result = db.fetchone("SELECT * FROM group_managers WHERE user_id = ?", (user_id,))
-    return result is not None
-
-def is_guild_admin(user_id, guild_id):
-    if user_id in BOT_OWNER_IDS:
-        return True
-    if is_group_manager(user_id):
-        return True
-    result = db.fetchone("SELECT * FROM guild_admins WHERE user_id = ? AND guild_id = ?", (user_id, guild_id))
-    return result is not None
 
 def add_coins(user_id, guild_id, amount):
     db.execute("UPDATE economy SET coins = coins + ? WHERE user_id = ? AND guild_id = ?", (amount, user_id, guild_id))
@@ -417,18 +496,49 @@ def set_global_rank(user_id, rank, assigned_by, reason=None):
     db.commit()
 
 # =============================================================================
+# PERMISSION CHECKS
+# =============================================================================
+
+def is_group_manager(user_id):
+    """Check if user is a Group Manager"""
+    if is_alpha(user_id):
+        return True
+    if user_id in BOT_OWNER_IDS:
+        return True
+    result = db.fetchone("SELECT * FROM group_managers WHERE user_id = ?", (user_id,))
+    return result is not None
+
+def is_group_admin(user_id):
+    """Check if user is a Group Administrator"""
+    if is_alpha(user_id):
+        return True
+    if user_id in BOT_OWNER_IDS:
+        return True
+    if is_group_manager(user_id):
+        return True
+    result = db.fetchone("SELECT * FROM group_admins WHERE user_id = ?", (user_id,))
+    return result is not None
+
+def is_guild_admin(user_id, guild_id):
+    """Check if user is a Guild Admin"""
+    if is_alpha(user_id):
+        return True
+    if user_id in BOT_OWNER_IDS:
+        return True
+    if is_group_manager(user_id):
+        return True
+    if is_group_admin(user_id):
+        return True
+    result = db.fetchone("SELECT * FROM guild_admins WHERE user_id = ? AND guild_id = ?", (user_id, guild_id))
+    return result is not None
+
+# =============================================================================
 # RANKS
 # =============================================================================
 
 RANKS = {
-    "Owner": {"priority": 10, "color": 0xFF0000, "emoji": "👑"},
-    "Co-Owner": {"priority": 9, "color": 0xFF4500, "emoji": "🟠"},
-    "Group Manager": {"priority": 8, "color": 0xFF5555, "emoji": "🛡️"},
-    "Administrator": {"priority": 7, "color": 0xFFAA00, "emoji": "⭐"},
-    "Senior Moderator": {"priority": 6, "color": 0x00FF00, "emoji": "🛡️"},
-    "Moderator": {"priority": 5, "color": 0x00AAFF, "emoji": "🤝"},
-    "Helper": {"priority": 4, "color": 0xAA00FF, "emoji": "💎"},
-    "VIP": {"priority": 3, "color": 0xFF00FF, "emoji": "💰"},
+    "Group Management": {"priority": 10, "color": 0xFF0000, "emoji": "👑"},
+    "Group Administrator": {"priority": 9, "color": 0xFF4500, "emoji": "🛡️"},
     "Member": {"priority": 2, "color": 0x888888, "emoji": "👤"},
     "Newcomer": {"priority": 1, "color": 0x444444, "emoji": "🌱"},
 }
@@ -477,7 +587,6 @@ class TicketModal(Modal):
         guild = interaction.guild
         guild_data = get_guild(guild.id)
         
-        # Create ticket channel
         category_id = guild_data.get("ticket_category")
         category = guild.get_channel(category_id) if category_id else None
         
@@ -487,7 +596,6 @@ class TicketModal(Modal):
             guild.me: nextcord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
         }
         
-        # Add admins
         admins = db.fetchall("SELECT user_id FROM guild_admins WHERE guild_id = ?", (guild.id,))
         for admin in admins:
             member = guild.get_member(admin['user_id'])
@@ -500,14 +608,12 @@ class TicketModal(Modal):
             overwrites=overwrites
         )
         
-        # Save ticket to database
         db.execute("INSERT INTO tickets (guild_id, channel_id, creator_id, topic, priority, created_at) VALUES (?, ?, ?, ?, ?, ?)",
                    (guild.id, channel.id, interaction.user.id, self.topic.value, self.priority.value or "medium", datetime.now().isoformat()))
         db.commit()
         
         ticket_id = db.cursor.lastrowid
         
-        # Send ticket embed
         embed = Embed(
             title=f"🎫 Ticket #{ticket_id}",
             description=f"**Topic:** {self.topic.value}\n**Description:** {self.description.value}\n**Priority:** {self.priority.value or 'medium'}\n**Created by:** {interaction.user.mention}",
@@ -521,7 +627,6 @@ class TicketModal(Modal):
             view=TicketActionView(ticket_id)
         )
         
-        # Log channel
         log_channel_id = guild_data.get("ticket_log")
         if log_channel_id:
             log_channel = guild.get_channel(log_channel_id)
@@ -564,10 +669,8 @@ class TicketActionView(View):
         if not view.value:
             return
         
-        # Get ticket data
         ticket = db.fetchone("SELECT * FROM tickets WHERE id = ?", (self.ticket_id,))
         
-        # Generate transcript
         transcript = f"Ticket #{self.ticket_id}\n"
         transcript += f"Created by: {ticket['creator_id']}\n"
         transcript += f"Created at: {ticket['created_at']}\n"
@@ -576,7 +679,6 @@ class TicketActionView(View):
         transcript += f"Closed by: {interaction.user.id}\n"
         transcript += f"Closed at: {datetime.now().isoformat()}\n"
         
-        # Get messages
         channel = interaction.channel
         async for msg in channel.history(limit=100):
             transcript += f"{msg.author.display_name}: {msg.content}\n"
@@ -585,17 +687,11 @@ class TicketActionView(View):
                    (datetime.now().isoformat(), transcript, self.ticket_id))
         db.commit()
         
-        # Send transcript
         await interaction.channel.send(embed=Embed(title="📄 Transcript", description=f"```\n{transcript[:1900]}\n```", color=0x5865F2))
         
-        # Delete channel after delay
         await interaction.response.send_message("⏳ Channel will be deleted in 10 seconds...")
         await asyncio.sleep(10)
         await channel.delete()
-
-# =============================================================================
-# GIVEAWAY VIEW
-# =============================================================================
 
 class GiveawayView(View):
     def __init__(self, giveaway_id, timeout=None):
@@ -688,6 +784,7 @@ async def on_ready():
     print(f"👥 Serving {sum(g.member_count for g in bot.guilds)} users")
     print(f"📦 Version: {VERSION}")
     print(f"🔑 Recovery Code: {recovery.recovery_code}")
+    print(f"👑 ALPHA: TommyTactical (922061012486725632)")
     await bot.change_presence(activity=nextcord.Activity(type=nextcord.ActivityType.watching, name="🇷🇴 România | /help"))
     await bot.sync_application_commands()
     print("✅ Slash commands synced")
@@ -777,8 +874,8 @@ async def auto_backup():
 # GROUP MANAGEMENT COMMANDS
 # =============================================================================
 
-@bot.slash_command(name="group_add", description="🛡️ Add Group Manager (Group Management only)")
-async def group_add(interaction: Interaction, user: Member = SlashOption(description="User to add", required=True), reason: str = SlashOption(description="Reason", required=False)):
+@bot.slash_command(name="group_add_manager", description="👑 Add Group Manager (Group Management only)")
+async def group_add_manager(interaction: Interaction, user: Member = SlashOption(description="User to add", required=True), reason: str = SlashOption(description="Reason", required=False)):
     if not is_group_manager(interaction.user.id):
         await interaction.response.send_message(embed=Embed(title="❌ Permission Denied", description="Only Group Managers can use this!", color=0xED4245))
         return
@@ -787,8 +884,8 @@ async def group_add(interaction: Interaction, user: Member = SlashOption(descrip
     embed = Embed(title="✅ Group Manager Added", description=f"{user.mention} is now a Group Manager!\n**Reason:** {reason or 'No reason'}", color=0x57F287)
     await interaction.response.send_message(embed=embed)
 
-@bot.slash_command(name="group_remove", description="🛡️ Remove Group Manager (Group Management only)")
-async def group_remove(interaction: Interaction, user: Member = SlashOption(description="User to remove", required=True)):
+@bot.slash_command(name="group_remove_manager", description="👑 Remove Group Manager (Group Management only)")
+async def group_remove_manager(interaction: Interaction, user: Member = SlashOption(description="User to remove", required=True)):
     if not is_group_manager(interaction.user.id):
         await interaction.response.send_message(embed=Embed(title="❌ Permission Denied", description="Only Group Managers can use this!", color=0xED4245))
         return
@@ -797,17 +894,61 @@ async def group_remove(interaction: Interaction, user: Member = SlashOption(desc
     embed = Embed(title="✅ Group Manager Removed", description=f"{user.mention} is no longer a Group Manager!", color=0x57F287)
     await interaction.response.send_message(embed=embed)
 
-@bot.slash_command(name="group_list", description="🛡️ List all Group Managers")
-async def group_list(interaction: Interaction):
-    managers = GroupManagement.get_all_group_managers()
-    if not managers:
-        embed = Embed(title="🛡️ Group Managers", description="No Group Managers found!", color=0x5865F2)
-        return await interaction.response.send_message(embed=embed)
+@bot.slash_command(name="group_add_admin", description="🛡️ Add Group Administrator (Group Management only)")
+async def group_add_admin(interaction: Interaction, user: Member = SlashOption(description="User to add", required=True), reason: str = SlashOption(description="Reason", required=False)):
+    if not is_group_manager(interaction.user.id):
+        await interaction.response.send_message(embed=Embed(title="❌ Permission Denied", description="Only Group Managers can use this!", color=0xED4245))
+        return
     
-    embed = Embed(title="🛡️ Group Managers", color=0x5865F2, timestamp=datetime.now())
-    for mgr in managers:
-        user = await bot.fetch_user(mgr['user_id'])
-        embed.add_field(name=user.display_name, value=f"Added: {mgr['timestamp']}\nReason: {mgr['reason'] or 'None'}", inline=False)
+    GroupManagement.add_group_admin(user.id, interaction.user.id, reason or "No reason")
+    embed = Embed(title="✅ Group Administrator Added", description=f"{user.mention} is now a Group Administrator!\n**Reason:** {reason or 'No reason'}", color=0x57F287)
+    await interaction.response.send_message(embed=embed)
+
+@bot.slash_command(name="group_remove_admin", description="🛡️ Remove Group Administrator (Group Management only)")
+async def group_remove_admin(interaction: Interaction, user: Member = SlashOption(description("User to remove", required=True)):
+    if not is_group_manager(interaction.user.id):
+        await interaction.response.send_message(embed=Embed(title="❌ Permission Denied", description="Only Group Managers can use this!", color=0xED4245))
+        return
+    
+    GroupManagement.remove_group_admin(user.id)
+    embed = Embed(title="✅ Group Administrator Removed", description=f"{user.mention} is no longer a Group Administrator!", color=0x57F287)
+    await interaction.response.send_message(embed=embed)
+
+@bot.slash_command(name="group_list", description="📋 List all Group Managers and Administrators")
+async def group_list(interaction: Interaction):
+    if not is_group_admin(interaction.user.id) and not is_group_manager(interaction.user.id):
+        await interaction.response.send_message(embed=Embed(title="❌ Permission Denied", description="Only Group Management or Group Administrators can use this!", color=0xED4245))
+        return
+    
+    managers = GroupManagement.get_all_group_managers()
+    admins = GroupManagement.get_all_group_admins()
+    
+    embed = Embed(title="👑 Group Staff", color=0x5865F2, timestamp=datetime.now())
+    
+    if managers:
+        mgr_list = ""
+        for mgr in managers:
+            try:
+                user = await bot.fetch_user(mgr['user_id'])
+                mgr_list += f"👑 {user.mention}\n"
+            except:
+                pass
+        embed.add_field(name="Group Managers", value=mgr_list or "None", inline=False)
+    else:
+        embed.add_field(name="Group Managers", value="None", inline=False)
+    
+    if admins:
+        admin_list = ""
+        for admin in admins:
+            try:
+                user = await bot.fetch_user(admin['user_id'])
+                admin_list += f"🛡️ {user.mention}\n"
+            except:
+                pass
+        embed.add_field(name="Group Administrators", value=admin_list or "None", inline=False)
+    else:
+        embed.add_field(name="Group Administrators", value="None", inline=False)
+    
     await interaction.response.send_message(embed=embed)
 
 # =============================================================================
@@ -815,7 +956,7 @@ async def group_list(interaction: Interaction):
 # =============================================================================
 
 @bot.slash_command(name="global_rank", description="🌍 Rank user across ALL servers (Group Management only)")
-async def global_rank(interaction: Interaction, user_id: str = SlashOption(description="User ID", required=True), rank: str = SlashOption(description="Rank", choices=list(RANKS.keys()), required=True), reason: str = SlashOption(description="Reason", required=False)):
+async def global_rank(interaction: Interaction, user_id: str = SlashOption(description="User ID", required=True), rank: str = SlashOption(description="Rank", choices=["Group Management", "Group Administrator", "Member", "Newcomer"], required=True), reason: str = SlashOption(description="Reason", required=False)):
     if not is_group_manager(interaction.user.id):
         await interaction.response.send_message(embed=Embed(title="❌ Permission Denied", description="Only Group Managers can use this!", color=0xED4245))
         return
@@ -866,6 +1007,37 @@ async def global_rank_info(interaction: Interaction, user_id: str = SlashOption(
         embed.add_field(name="Reason", value=rank_data['reason'], inline=False)
     await interaction.response.send_message(embed=embed)
 
+@bot.slash_command(name="global_rank_list", description="🌍 List all users with global ranks")
+async def global_rank_list(interaction: Interaction):
+    if not is_group_admin(interaction.user.id) and not is_group_manager(interaction.user.id):
+        await interaction.response.send_message(embed=Embed(title="❌ Permission Denied", description="Only Group Management or Group Administrators can use this!", color=0xED4245))
+        return
+    
+    results = db.fetchall("SELECT * FROM global_ranks WHERE rank != 'Member' ORDER BY rank, assigned_at")
+    
+    if not results:
+        await interaction.response.send_message(embed=Embed(title="📋 Global Ranks", description="No users with custom global ranks!", color=0x5865F2))
+        return
+    
+    embed = Embed(title="📋 Global Ranks List", color=0x5865F2, timestamp=datetime.now())
+    
+    for row in results[:20]:
+        try:
+            user = await bot.fetch_user(row['user_id'])
+            rank_data = RANKS.get(row['rank'], {"emoji": "👤"})
+            embed.add_field(
+                name=f"{rank_data['emoji']} {row['rank']}",
+                value=f"{user.mention} ({user.name})",
+                inline=True
+            )
+        except:
+            pass
+    
+    if len(results) > 20:
+        embed.set_footer(text=f"And {len(results) - 20} more users...")
+    
+    await interaction.response.send_message(embed=embed)
+
 # =============================================================================
 # TICKET SYSTEM
 # =============================================================================
@@ -914,7 +1086,6 @@ async def ticket_close(interaction: Interaction):
     if not view.value:
         return
     
-    # Generate transcript
     transcript = f"Ticket #{ticket['id']}\n"
     transcript += f"Created by: {ticket['creator_id']}\n"
     transcript += f"Topic: {ticket['topic']}\n"
@@ -971,7 +1142,7 @@ async def giveaway_end(interaction: Interaction, message_id: str = SlashOption(d
     await interaction.response.send_message(embed=embed)
 
 # =============================================================================
-# ADMIN COMMANDS
+# GUILD ADMIN COMMANDS
 # =============================================================================
 
 @bot.slash_command(name="add_admin", description="👑 Add guild admin (Admin only)")
@@ -1012,7 +1183,7 @@ async def list_admins(interaction: Interaction):
     await interaction.response.send_message(embed=embed)
 
 # =============================================================================
-# MODERATION COMMANDS (Admin Only)
+# MODERATION COMMANDS
 # =============================================================================
 
 @bot.slash_command(name="ban", description="🔨 Ban member (Admin only)")
@@ -1117,10 +1288,7 @@ async def restart_bot(interaction: Interaction):
     embed = Embed(title="🔄 Restarting...", description="Bot is restarting. Please wait 30-60 seconds.", color=0x57F287)
     await interaction.channel.send(embed=embed)
     
-    # Create backup before restart
     recovery.create_backup()
-    
-    # Exit to let the hosting platform restart
     sys.exit(0)
 
 # =============================================================================
@@ -1616,8 +1784,8 @@ async def ping(interaction: Interaction):
 @bot.slash_command(name="help", description="📖 Show all commands!")
 async def help_command(interaction: Interaction):
     embed = Embed(title="📖 Commands", color=0x5865F2, timestamp=datetime.now())
-    embed.add_field(name="👑 Group Management", value="/group_add, /group_remove, /group_list", inline=False)
-    embed.add_field(name="🌍 Global", value="/global_rank, /global_rank_info, /global_ban, /global_unban, /global_kick, /global_announce, /global_dm", inline=False)
+    embed.add_field(name="👑 Group Management", value="/group_add_manager, /group_remove_manager, /group_add_admin, /group_remove_admin, /group_list", inline=False)
+    embed.add_field(name="🌍 Global", value="/global_rank, /global_rank_info, /global_rank_list, /global_ban, /global_unban, /global_kick, /global_announce, /global_dm", inline=False)
     embed.add_field(name="🎫 Tickets", value="/ticket_panel, /ticket_setup, /ticket_close", inline=False)
     embed.add_field(name="🎁 Giveaways", value="/giveaway_start, /giveaway_end", inline=False)
     embed.add_field(name="🛡️ Admin", value="/add_admin, /remove_admin, /admins, /ban, /kick, /clear, /warn, /warnings, /mute, /audit", inline=False)
@@ -1746,6 +1914,7 @@ def home():
                 <div class="stat">🎯 {len(bot.guilds)} Servers</div>
                 <div class="stat">👥 {sum(g.member_count for g in bot.guilds)} Users</div>
                 <div class="stat">🔑 {recovery.recovery_code}</div>
+                <div class="stat">👑 Alpha: TommyTactical</div>
             </div>
             <div class="footer">Made with ❤️ for the Romanian Community</div>
         </div>
@@ -1765,7 +1934,8 @@ def stats():
         "servers": len(bot.guilds),
         "users": sum(g.member_count for g in bot.guilds),
         "uptime": str(datetime.now() - START_TIME),
-        "recovery_code": recovery.recovery_code
+        "recovery_code": recovery.recovery_code,
+        "alpha": "TommyTactical (922061012486725632)"
     })
 
 def run_web():
