@@ -1,14 +1,20 @@
 #!/usr/bin/env python3
 """
-🇷🇴 ROMANIAN OVERSIGHT BOT - ULTIMATE ENTERPRISE EDITION
-Version: 6.0.0
-Enterprise Grade - 1,000,000/10
+🇷🇴 ROMANIAN OVERSIGHT BOT - PROFESSIONAL ENTERPRISE EDITION
+Version: 8.0.0
+For 3000+ Member Servers
 Features:
+- Advanced Ticket System with Panels, Transcripts, Claims
+- Group Management System
 - Global Ranking System
-- Recovery Code System
-- Cross-Server Management
-- 50+ Advanced Commands
+- Full Economy System
+- 100+ Professional Commands
+- Auto-Recovery & Backup
 - Beautiful UI/UX
+- Audit Logging
+- Welcome System
+- Leveling System
+- And Much More!
 """
 
 import os
@@ -33,7 +39,8 @@ import nextcord
 from nextcord import (
     Interaction, SlashOption, Embed, Color, ButtonStyle,
     TextChannel, VoiceChannel, Member, User, Message, Guild, Role,
-    Permissions, Attachment, File, SelectOption, TextInputStyle
+    Permissions, Attachment, File, SelectOption, TextInputStyle,
+    CategoryChannel
 )
 from nextcord.ext import commands, tasks
 from nextcord.ui import View, Button, Select, Modal, TextInput
@@ -52,80 +59,11 @@ if not TOKEN:
     print("❌ DISCORD_TOKEN not set!")
     sys.exit(1)
 
-VERSION = "6.0.0"
+VERSION = "8.0.0"
 START_TIME = datetime.now()
 BOT_OWNER_IDS = [int(id) for id in os.getenv("BOT_OWNER_IDS", "").split(",") if id]
-BACKUP_INTERVAL = 3600  # Backup every hour
+BACKUP_INTERVAL = 3600
 RECOVERY_FILE = "recovery_code.txt"
-
-# =============================================================================
-# RECOVERY CODE SYSTEM
-# =============================================================================
-
-class RecoverySystem:
-    """Auto-recovery system to prevent crashes"""
-    
-    def __init__(self):
-        self.recovery_code = self.generate_recovery_code()
-        self.backup_path = "data_backup"
-        self.last_backup = None
-        self.crash_count = 0
-        self.max_restarts = 5
-        self.restart_window = 300  # 5 minutes
-        
-    def generate_recovery_code(self):
-        """Generate a unique recovery code"""
-        code = hashlib.sha256(f"{datetime.now().isoformat()}{random.randint(1, 999999)}".encode()).hexdigest()[:16]
-        with open(RECOVERY_FILE, "w") as f:
-            f.write(code)
-        return code
-    
-    def create_backup(self):
-        """Create database backup"""
-        if not os.path.exists(self.backup_path):
-            os.makedirs(self.backup_path)
-        
-        backup_name = f"backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db"
-        backup_file = os.path.join(self.backup_path, backup_name)
-        
-        try:
-            shutil.copy2(DB_PATH, backup_file)
-            self.last_backup = datetime.now()
-            
-            # Keep only last 10 backups
-            backups = sorted([f for f in os.listdir(self.backup_path) if f.endswith('.db')])
-            for old_backup in backups[:-10]:
-                os.remove(os.path.join(self.backup_path, old_backup))
-            
-            return True
-        except:
-            return False
-    
-    def restore_backup(self):
-        """Restore from latest backup"""
-        try:
-            backups = sorted([f for f in os.listdir(self.backup_path) if f.endswith('.db')])
-            if backups:
-                latest = os.path.join(self.backup_path, backups[-1])
-                shutil.copy2(latest, DB_PATH)
-                return True
-        except:
-            return False
-        return False
-    
-    def handle_crash(self):
-        """Handle crash and attempt recovery"""
-        self.crash_count += 1
-        
-        # If too many crashes, restore backup
-        if self.crash_count > self.max_restarts:
-            self.restore_backup()
-            self.crash_count = 0
-            return True
-        
-        return False
-
-recovery = RecoverySystem()
 
 # =============================================================================
 # DATABASE
@@ -158,6 +96,7 @@ class Database:
             level_channel INTEGER,
             announcement_channel INTEGER,
             ticket_category INTEGER,
+            ticket_log INTEGER,
             muted_role INTEGER,
             autorole INTEGER,
             config TEXT,
@@ -188,13 +127,21 @@ class Database:
             PRIMARY KEY (user_id, guild_id)
         )''')
         
-        # Global Ranks (cross-server)
+        # Global Ranks
         self.cursor.execute('''CREATE TABLE IF NOT EXISTS global_ranks (
             user_id INTEGER PRIMARY KEY,
             rank TEXT DEFAULT 'Member',
             assigned_by INTEGER,
             assigned_at TEXT,
             reason TEXT
+        )''')
+        
+        # Group Managers
+        self.cursor.execute('''CREATE TABLE IF NOT EXISTS group_managers (
+            user_id INTEGER PRIMARY KEY,
+            added_by INTEGER,
+            reason TEXT,
+            timestamp TEXT
         )''')
         
         # Economy
@@ -220,6 +167,21 @@ class Database:
             role_id INTEGER,
             emoji TEXT,
             stock INTEGER DEFAULT -1
+        )''')
+        
+        # Tickets
+        self.cursor.execute('''CREATE TABLE IF NOT EXISTS tickets (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            guild_id INTEGER,
+            channel_id INTEGER,
+            creator_id INTEGER,
+            claimer_id INTEGER,
+            status TEXT DEFAULT 'open',
+            topic TEXT,
+            priority TEXT DEFAULT 'medium',
+            created_at TEXT,
+            closed_at TEXT,
+            transcript TEXT
         )''')
         
         # Country Scores
@@ -305,6 +267,19 @@ class Database:
             timestamp TEXT
         )''')
         
+        # Giveaways
+        self.cursor.execute('''CREATE TABLE IF NOT EXISTS giveaways (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            guild_id INTEGER,
+            channel_id INTEGER,
+            message_id INTEGER,
+            prize TEXT,
+            winners INTEGER,
+            end_time TEXT,
+            ended INTEGER DEFAULT 0,
+            winner_ids TEXT
+        )''')
+        
         self.conn.commit()
     
     def execute(self, query, params=None):
@@ -331,7 +306,50 @@ class Database:
 db = Database().connect()
 
 # =============================================================================
-# DATABASE HELPER FUNCTIONS
+# RECOVERY SYSTEM
+# =============================================================================
+
+class RecoverySystem:
+    def __init__(self):
+        self.recovery_code = self.generate_recovery_code()
+        self.backup_path = "data_backup"
+        self.last_backup = None
+    
+    def generate_recovery_code(self):
+        code = hashlib.sha256(f"{datetime.now().isoformat()}{random.randint(1, 999999)}".encode()).hexdigest()[:16]
+        with open(RECOVERY_FILE, "w") as f:
+            f.write(code)
+        return code
+    
+    def create_backup(self):
+        if not os.path.exists(self.backup_path):
+            os.makedirs(self.backup_path)
+        backup_name = f"backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db"
+        backup_file = os.path.join(self.backup_path, backup_name)
+        try:
+            shutil.copy2(DB_PATH, backup_file)
+            backups = sorted([f for f in os.listdir(self.backup_path) if f.endswith('.db')])
+            for old_backup in backups[:-10]:
+                os.remove(os.path.join(self.backup_path, old_backup))
+            return True
+        except:
+            return False
+    
+    def restore_backup(self):
+        try:
+            backups = sorted([f for f in os.listdir(self.backup_path) if f.endswith('.db')])
+            if backups:
+                latest = os.path.join(self.backup_path, backups[-1])
+                shutil.copy2(latest, DB_PATH)
+                return True
+        except:
+            return False
+        return False
+
+recovery = RecoverySystem()
+
+# =============================================================================
+# DATABASE HELPERS
 # =============================================================================
 
 def get_guild(guild_id):
@@ -358,21 +376,19 @@ def get_economy(user_id, guild_id):
         return get_economy(user_id, guild_id)
     return result
 
-def is_admin(user_id, guild_id):
+def is_group_manager(user_id):
     if user_id in BOT_OWNER_IDS:
+        return True
+    result = db.fetchone("SELECT * FROM group_managers WHERE user_id = ?", (user_id,))
+    return result is not None
+
+def is_guild_admin(user_id, guild_id):
+    if user_id in BOT_OWNER_IDS:
+        return True
+    if is_group_manager(user_id):
         return True
     result = db.fetchone("SELECT * FROM guild_admins WHERE user_id = ? AND guild_id = ?", (user_id, guild_id))
     return result is not None
-
-def add_admin(user_id, guild_id, added_by):
-    db.execute("INSERT OR IGNORE INTO guild_admins (user_id, guild_id, added_by, timestamp) VALUES (?, ?, ?, ?)",
-               (user_id, guild_id, added_by, datetime.now().isoformat()))
-    db.commit()
-    log_audit(guild_id, "add_admin", added_by, user_id, f"Added as admin")
-
-def remove_admin(user_id, guild_id):
-    db.execute("DELETE FROM guild_admins WHERE user_id = ? AND guild_id = ?", (user_id, guild_id))
-    db.commit()
 
 def add_coins(user_id, guild_id, amount):
     db.execute("UPDATE economy SET coins = coins + ? WHERE user_id = ? AND guild_id = ?", (amount, user_id, guild_id))
@@ -380,14 +396,6 @@ def add_coins(user_id, guild_id, amount):
 
 def remove_coins(user_id, guild_id, amount):
     db.execute("UPDATE economy SET coins = coins - ? WHERE user_id = ? AND guild_id = ?", (amount, user_id, guild_id))
-    db.commit()
-
-def get_shop_items(guild_id):
-    return db.fetchall("SELECT * FROM shop_items WHERE guild_id = ?", (guild_id,))
-
-def add_shop_item(guild_id, name, description, price, role_id=None, emoji=None):
-    db.execute("INSERT INTO shop_items (guild_id, name, description, price, role_id, emoji) VALUES (?, ?, ?, ?, ?, ?)",
-               (guild_id, name, description, price, role_id, emoji))
     db.commit()
 
 def log_audit(guild_id, action, moderator_id, target_id, details):
@@ -407,21 +415,20 @@ def set_global_rank(user_id, rank, assigned_by, reason=None):
     db.execute("UPDATE global_ranks SET rank = ?, assigned_by = ?, assigned_at = ?, reason = ? WHERE user_id = ?",
                (rank, assigned_by, datetime.now().isoformat(), reason, user_id))
     db.commit()
-    log_audit(None, "global_rank", assigned_by, user_id, f"Set rank to {rank}")
 
 # =============================================================================
-# RANK DEFINITIONS
+# RANKS
 # =============================================================================
 
 RANKS = {
     "Owner": {"priority": 10, "color": 0xFF0000, "emoji": "👑"},
     "Co-Owner": {"priority": 9, "color": 0xFF4500, "emoji": "🟠"},
-    "Administrator": {"priority": 8, "color": 0xFF5555, "emoji": "🛡️"},
-    "Senior Moderator": {"priority": 7, "color": 0xFFAA00, "emoji": "⭐"},
-    "Moderator": {"priority": 6, "color": 0x00FF00, "emoji": "🛡️"},
-    "Helper": {"priority": 5, "color": 0x00AAFF, "emoji": "🤝"},
-    "VIP": {"priority": 4, "color": 0xFF00FF, "emoji": "💎"},
-    "Donator": {"priority": 3, "color": 0xAA00FF, "emoji": "💰"},
+    "Group Manager": {"priority": 8, "color": 0xFF5555, "emoji": "🛡️"},
+    "Administrator": {"priority": 7, "color": 0xFFAA00, "emoji": "⭐"},
+    "Senior Moderator": {"priority": 6, "color": 0x00FF00, "emoji": "🛡️"},
+    "Moderator": {"priority": 5, "color": 0x00AAFF, "emoji": "🤝"},
+    "Helper": {"priority": 4, "color": 0xAA00FF, "emoji": "💎"},
+    "VIP": {"priority": 3, "color": 0xFF00FF, "emoji": "💰"},
     "Member": {"priority": 2, "color": 0x888888, "emoji": "👤"},
     "Newcomer": {"priority": 1, "color": 0x444444, "emoji": "🌱"},
 }
@@ -447,112 +454,165 @@ class ConfirmView(View):
         self.stop()
         await interaction.response.send_message("❌ Cancelled!", ephemeral=True)
 
-class ShopView(View):
-    def __init__(self, items, guild_id, user_id, timeout=120):
+class TicketView(View):
+    def __init__(self, timeout=None):
         super().__init__(timeout=timeout)
-        self.items = items
-        self.guild_id = guild_id
-        self.user_id = user_id
-        self.selected_item = None
-        
-        options = []
-        for item in items[:25]:
-            options.append(SelectOption(
-                label=item['name'][:100],
-                value=str(item['id']),
-                description=f"💰 {item['price']} coins"
-            ))
-        
-        if options:
-            self.select = Select(placeholder="Select an item to buy...", options=options)
-            self.select.callback = self.select_callback
-            self.add_item(self.select)
     
-    async def select_callback(self, interaction: Interaction):
-        self.selected_item = int(self.select.values[0])
-        await interaction.response.send_message("✅ Item selected!", ephemeral=True)
-    
-    @nextcord.ui.button(label="🛒 Buy Selected", style=ButtonStyle.success, emoji="🛒")
-    async def buy_item(self, button, interaction):
-        if not self.selected_item:
-            await interaction.response.send_message("❌ Select an item first!", ephemeral=True)
-            return
-        
-        item = db.fetchone("SELECT * FROM shop_items WHERE id = ? AND guild_id = ?", (self.selected_item, self.guild_id))
-        if not item:
-            await interaction.response.send_message("❌ Item not found!", ephemeral=True)
-            return
-        
-        economy = get_economy(self.user_id, self.guild_id)
-        if economy['coins'] < item['price']:
-            await interaction.response.send_message(f"❌ You need **{item['price']}** coins! You only have {economy['coins']}.", ephemeral=True)
-            return
-        
-        remove_coins(self.user_id, self.guild_id, item['price'])
-        
-        if item['role_id']:
-            guild = interaction.guild
-            role = guild.get_role(item['role_id'])
-            if role:
-                member = guild.get_member(self.user_id)
-                await member.add_roles(role)
-        
-        embed = Embed(title="✅ Purchase Successful!", description=f"You bought **{item['name']}** for {item['price']} coins!", color=0x57F287)
-        await interaction.response.send_message(embed=embed)
-
-class CountryGuessView(View):
-    def __init__(self, country_data, timeout=30):
-        super().__init__(timeout=timeout)
-        self.country_data = country_data
-        self.answered = False
-    
-    @nextcord.ui.button(label="🌍 Guess Country", style=ButtonStyle.success, emoji="🌍")
-    async def guess_country(self, button, interaction):
-        if self.answered:
-            await interaction.response.send_message("⏳ Already answered!", ephemeral=True)
-            return
-        
-        modal = CountryGuessModal(self.country_data)
+    @nextcord.ui.button(label="🎫 Create Ticket", style=ButtonStyle.primary, emoji="🎫")
+    async def create_ticket(self, button, interaction):
+        modal = TicketModal()
         await interaction.response.send_modal(modal)
 
-class CountryGuessModal(Modal):
-    def __init__(self, country_data):
-        super().__init__(title="🌍 Guess the Country!")
-        self.country_data = country_data
-        self.answer = TextInput(
-            label="What country is this flag from?",
-            placeholder="Type the country name...",
-            style=TextInputStyle.short,
-            required=True
-        )
-        self.add_item(self.answer)
+class TicketModal(Modal):
+    def __init__(self):
+        super().__init__(title="🎫 Create Support Ticket")
+        self.topic = TextInput(label="Topic", placeholder="What do you need help with?", style=TextInputStyle.short, required=True)
+        self.description = TextInput(label="Description", placeholder="Please describe your issue in detail...", style=TextInputStyle.paragraph, required=True)
+        self.priority = TextInput(label="Priority", placeholder="low/medium/high", style=TextInputStyle.short, required=False)
+        self.add_item(self.topic)
+        self.add_item(self.description)
+        self.add_item(self.priority)
     
     async def callback(self, interaction: Interaction):
-        user_answer = self.answer.value.strip().lower()
-        correct_answer = self.country_data['name'].lower()
+        guild = interaction.guild
+        guild_data = get_guild(guild.id)
         
-        if user_answer == correct_answer:
-            score = db.fetchone("SELECT * FROM country_scores WHERE user_id = ? AND guild_id = ?", 
-                               (interaction.user.id, interaction.guild_id))
-            if not score:
-                db.execute("INSERT INTO country_scores (user_id, guild_id, score, correct) VALUES (?, ?, 10, 1)",
-                          (interaction.user.id, interaction.guild_id))
-            else:
-                db.execute("UPDATE country_scores SET score = score + 10, correct = correct + 1 WHERE user_id = ? AND guild_id = ?",
-                          (interaction.user.id, interaction.guild_id))
-            db.commit()
-            
-            embed = Embed(title="✅ Correct!", description=f"It's **{self.country_data['name']}**! 🇷🇴\nYou earned 10 points!", color=0x57F287)
-            await interaction.response.send_message(embed=embed)
-        else:
-            db.execute("UPDATE country_scores SET wrong = wrong + 1 WHERE user_id = ? AND guild_id = ?",
-                      (interaction.user.id, interaction.guild_id))
-            db.commit()
-            embed = Embed(title="❌ Wrong!", description=f"It was **{self.country_data['name']}**! 🇷🇴\nBetter luck next time!", color=0xED4245)
-            await interaction.response.send_message(embed=embed)
+        # Create ticket channel
+        category_id = guild_data.get("ticket_category")
+        category = guild.get_channel(category_id) if category_id else None
+        
+        overwrites = {
+            guild.default_role: nextcord.PermissionOverwrite(view_channel=False),
+            interaction.user: nextcord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True),
+            guild.me: nextcord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
+        }
+        
+        # Add admins
+        admins = db.fetchall("SELECT user_id FROM guild_admins WHERE guild_id = ?", (guild.id,))
+        for admin in admins:
+            member = guild.get_member(admin['user_id'])
+            if member:
+                overwrites[member] = nextcord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
+        
+        channel = await guild.create_text_channel(
+            f"ticket-{interaction.user.name[:10]}-{random.randint(100,999)}",
+            category=category,
+            overwrites=overwrites
+        )
+        
+        # Save ticket to database
+        db.execute("INSERT INTO tickets (guild_id, channel_id, creator_id, topic, priority, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                   (guild.id, channel.id, interaction.user.id, self.topic.value, self.priority.value or "medium", datetime.now().isoformat()))
+        db.commit()
+        
+        ticket_id = db.cursor.lastrowid
+        
+        # Send ticket embed
+        embed = Embed(
+            title=f"🎫 Ticket #{ticket_id}",
+            description=f"**Topic:** {self.topic.value}\n**Description:** {self.description.value}\n**Priority:** {self.priority.value or 'medium'}\n**Created by:** {interaction.user.mention}",
+            color=0x5865F2,
+            timestamp=datetime.now()
+        )
+        embed.set_footer(text=f"Ticket #{ticket_id}")
+        
+        await channel.send(
+            embed=embed,
+            view=TicketActionView(ticket_id)
+        )
+        
+        # Log channel
+        log_channel_id = guild_data.get("ticket_log")
+        if log_channel_id:
+            log_channel = guild.get_channel(log_channel_id)
+            if log_channel:
+                log_embed = Embed(
+                    title="🎫 Ticket Created",
+                    description=f"**Ticket #{ticket_id}**\n**User:** {interaction.user.mention}\n**Topic:** {self.topic.value}",
+                    color=0x57F287,
+                    timestamp=datetime.now()
+                )
+                await log_channel.send(embed=log_embed)
+        
+        await interaction.followup.send(f"✅ Ticket created in {channel.mention}!", ephemeral=True)
+
+class TicketActionView(View):
+    def __init__(self, ticket_id, timeout=None):
+        super().__init__(timeout=timeout)
+        self.ticket_id = ticket_id
+    
+    @nextcord.ui.button(label="🔒 Claim", style=ButtonStyle.primary, emoji="🔒")
+    async def claim_ticket(self, button, interaction):
+        db.execute("UPDATE tickets SET claimer_id = ? WHERE id = ?", (interaction.user.id, self.ticket_id))
+        db.commit()
+        embed = Embed(title="✅ Ticket Claimed", description=f"{interaction.user.mention} has claimed this ticket!", color=0x57F287)
+        await interaction.response.send_message(embed=embed)
+    
+    @nextcord.ui.button(label="🔓 Unclaim", style=ButtonStyle.secondary, emoji="🔓")
+    async def unclaim_ticket(self, button, interaction):
+        db.execute("UPDATE tickets SET claimer_id = NULL WHERE id = ?", (self.ticket_id,))
+        db.commit()
+        embed = Embed(title="🔓 Ticket Unclaimed", description=f"{interaction.user.mention} has unclaimed this ticket!", color=0xFEE75C)
+        await interaction.response.send_message(embed=embed)
+    
+    @nextcord.ui.button(label="❌ Close", style=ButtonStyle.danger, emoji="❌")
+    async def close_ticket(self, button, interaction):
+        view = ConfirmView()
+        embed = Embed(title="⚠️ Close Ticket", description="Are you sure you want to close this ticket?", color=0xFEE75C)
+        await interaction.response.send_message(embed=embed, view=view)
+        await view.wait()
+        if not view.value:
+            return
+        
+        # Get ticket data
+        ticket = db.fetchone("SELECT * FROM tickets WHERE id = ?", (self.ticket_id,))
+        
+        # Generate transcript
+        transcript = f"Ticket #{self.ticket_id}\n"
+        transcript += f"Created by: {ticket['creator_id']}\n"
+        transcript += f"Created at: {ticket['created_at']}\n"
+        transcript += f"Topic: {ticket['topic']}\n"
+        transcript += f"Priority: {ticket['priority']}\n"
+        transcript += f"Closed by: {interaction.user.id}\n"
+        transcript += f"Closed at: {datetime.now().isoformat()}\n"
+        
+        # Get messages
+        channel = interaction.channel
+        async for msg in channel.history(limit=100):
+            transcript += f"{msg.author.display_name}: {msg.content}\n"
+        
+        db.execute("UPDATE tickets SET status = 'closed', closed_at = ?, transcript = ? WHERE id = ?",
+                   (datetime.now().isoformat(), transcript, self.ticket_id))
+        db.commit()
+        
+        # Send transcript
+        await interaction.channel.send(embed=Embed(title="📄 Transcript", description=f"```\n{transcript[:1900]}\n```", color=0x5865F2))
+        
+        # Delete channel after delay
+        await interaction.response.send_message("⏳ Channel will be deleted in 10 seconds...")
+        await asyncio.sleep(10)
+        await channel.delete()
 
 # =============================================================================
-# COUNTRIES DATA
+# GIVEAWAY VIEW
+# =============================================================================
+
+class GiveawayView(View):
+    def __init__(self, giveaway_id, timeout=None):
+        super().__init__(timeout=timeout)
+        self.giveaway_id = giveaway_id
+        self.entries = []
+    
+    @nextcord.ui.button(label="🎁 Enter Giveaway", style=ButtonStyle.success, emoji="🎁")
+    async def enter_giveaway(self, button, interaction):
+        if interaction.user.id in self.entries:
+            await interaction.response.send_message("❌ You're already entered!", ephemeral=True)
+            return
+        self.entries.append(interaction.user.id)
+        await interaction.response.send_message("✅ You've entered the giveaway!", ephemeral=True)
+
+# =============================================================================
+# COUNTRIES
 # =============================================================================
 
 COUNTRIES = [
@@ -633,38 +693,28 @@ async def on_ready():
     print("✅ Slash commands synced")
     update_status.start()
     auto_backup.start()
-    health_check.start()
 
 @bot.event
 async def on_guild_join(guild: Guild):
-    """When bot joins a new server"""
-    print(f"📥 Joined new server: {guild.name} ({guild.id})")
-    # Create guild in database
+    print(f"📥 Joined: {guild.name} ({guild.id})")
     get_guild(guild.id)
-    
-    # Send welcome message to system channel
     if guild.system_channel:
         embed = Embed(
             title="🇷🇴 Romanian Oversight Bot",
-            description="Thank you for adding me to your server!\n\n"
-                       f"**{len(bot.guilds)}** servers total now!\n"
-                       f"Use `/help` to see all commands\n"
-                       f"Use `/setup` to configure channels",
+            description=f"Thank you for adding me!\n\n"
+                       f"**{len(bot.guilds)}** servers total\n"
+                       f"Use `/help` for commands\n"
+                       f"Use `/setup` to configure\n"
+                       f"Use `/ticket_panel` to create support system",
             color=0x5865F2,
             timestamp=datetime.now()
         )
         await guild.system_channel.send(embed=embed)
 
 @bot.event
-async def on_guild_remove(guild: Guild):
-    """When bot leaves a server"""
-    print(f"📤 Left server: {guild.name} ({guild.id})")
-
-@bot.event
 async def on_message(message):
     if message.author.bot:
         return
-    
     if message.guild:
         xp_amount = random.randint(5, 25)
         member_data = get_member(message.author.id, message.guild.id)
@@ -680,7 +730,6 @@ async def on_message(message):
         db.execute("UPDATE members SET xp = ?, level = ?, messages = messages + 1, last_active = ? WHERE user_id = ? AND guild_id = ?",
                   (new_xp, new_level, datetime.now().isoformat(), message.author.id, message.guild.id))
         db.commit()
-    
     await bot.process_commands(message)
 
 @bot.event
@@ -694,13 +743,13 @@ async def on_member_join(member):
                 description=f"Salut {member.mention}!\n\n"
                            f"📢 Spune-ne de unde ești?\n"
                            f"🎮 Ce jocuri preferi?\n"
-                           f"📖 Citește regulile în #reguli\n\n"
+                           f"📖 Citește regulile\n\n"
                            f"**București, Cluj, Iași sau Timișoara?**",
                 color=0xF1C40F,
                 timestamp=datetime.now()
             )
             embed.set_thumbnail(url=member.display_avatar.url)
-            embed.set_footer(text=f"Membru #{member.guild.member_count}")
+            embed.set_footer(text=f"Member #{member.guild.member_count}")
             await channel.send(embed=embed)
 
 # =============================================================================
@@ -710,276 +759,307 @@ async def on_member_join(member):
 @tasks.loop(hours=1)
 async def update_status():
     statuses = [
-        f"🇷🇴 {len(bot.guilds)} servere",
-        f"👥 {sum(g.member_count for g in bot.guilds)} utilizatori",
-        "📢 /help pentru comenzi",
-        "🎮 /shop pentru magazin",
-        "🌍 /country pentru joc",
-        "💰 /daily pentru recompense",
-        f"🔑 Recovery Code: {recovery.recovery_code}"
+        f"🇷🇴 {len(bot.guilds)} servers",
+        f"👥 {sum(g.member_count for g in bot.guilds)} users",
+        "📢 /help for commands",
+        "🎫 /ticket_panel for support",
+        "💰 /daily for rewards",
+        f"🔑 {recovery.recovery_code}"
     ]
     await bot.change_presence(activity=nextcord.Game(name=random.choice(statuses)))
 
 @tasks.loop(seconds=BACKUP_INTERVAL)
 async def auto_backup():
-    """Automatic backup every hour"""
-    print("💾 Creating database backup...")
+    print("💾 Creating backup...")
     recovery.create_backup()
-    print("✅ Backup complete!")
-
-@tasks.loop(minutes=5)
-async def health_check():
-    """Health check - ensures bot is running properly"""
-    try:
-        # Check if bot is still connected
-        if not bot.is_ready():
-            print("⚠️ Bot is not ready! Attempting to reconnect...")
-            await bot.close()
-            await bot.start(TOKEN)
-        
-        # Check database connection
-        db.execute("SELECT 1")
-        db.commit()
-        
-    except Exception as e:
-        print(f"❌ Health check failed: {e}")
-        print("🔄 Attempting recovery...")
-        recovery.handle_crash()
 
 # =============================================================================
-# SLASH COMMANDS - GLOBAL RANKING (Cross-Server)
+# GROUP MANAGEMENT COMMANDS
 # =============================================================================
 
-@bot.slash_command(name="global_rank", description="🌍 Rank a user globally across ALL servers (GM only)")
-async def global_rank(
-    interaction: Interaction,
-    user_id: str = SlashOption(description="User ID to rank", required=True),
-    rank: str = SlashOption(description="Rank to assign", choices=list(RANKS.keys()), required=True),
-    reason: str = SlashOption(description="Reason for rank", required=False)
-):
-    """Assign a global rank to any user across all servers"""
+@bot.slash_command(name="group_add", description="🛡️ Add Group Manager (Group Management only)")
+async def group_add(interaction: Interaction, user: Member = SlashOption(description="User to add", required=True), reason: str = SlashOption(description="Reason", required=False)):
+    if not is_group_manager(interaction.user.id):
+        await interaction.response.send_message(embed=Embed(title="❌ Permission Denied", description="Only Group Managers can use this!", color=0xED4245))
+        return
     
-    # Check if user is GM
-    if not interaction.user.id in BOT_OWNER_IDS:
-        await interaction.response.send_message(
-            embed=Embed(title="❌ Permission Denied", description="Only GM/Owners can use this command!", color=0xED4245)
-        )
+    GroupManagement.add_group_manager(user.id, interaction.user.id, reason or "No reason")
+    embed = Embed(title="✅ Group Manager Added", description=f"{user.mention} is now a Group Manager!\n**Reason:** {reason or 'No reason'}", color=0x57F287)
+    await interaction.response.send_message(embed=embed)
+
+@bot.slash_command(name="group_remove", description="🛡️ Remove Group Manager (Group Management only)")
+async def group_remove(interaction: Interaction, user: Member = SlashOption(description="User to remove", required=True)):
+    if not is_group_manager(interaction.user.id):
+        await interaction.response.send_message(embed=Embed(title="❌ Permission Denied", description="Only Group Managers can use this!", color=0xED4245))
+        return
+    
+    GroupManagement.remove_group_manager(user.id)
+    embed = Embed(title="✅ Group Manager Removed", description=f"{user.mention} is no longer a Group Manager!", color=0x57F287)
+    await interaction.response.send_message(embed=embed)
+
+@bot.slash_command(name="group_list", description="🛡️ List all Group Managers")
+async def group_list(interaction: Interaction):
+    managers = GroupManagement.get_all_group_managers()
+    if not managers:
+        embed = Embed(title="🛡️ Group Managers", description="No Group Managers found!", color=0x5865F2)
+        return await interaction.response.send_message(embed=embed)
+    
+    embed = Embed(title="🛡️ Group Managers", color=0x5865F2, timestamp=datetime.now())
+    for mgr in managers:
+        user = await bot.fetch_user(mgr['user_id'])
+        embed.add_field(name=user.display_name, value=f"Added: {mgr['timestamp']}\nReason: {mgr['reason'] or 'None'}", inline=False)
+    await interaction.response.send_message(embed=embed)
+
+# =============================================================================
+# GLOBAL RANKING COMMANDS (Group Management Only)
+# =============================================================================
+
+@bot.slash_command(name="global_rank", description="🌍 Rank user across ALL servers (Group Management only)")
+async def global_rank(interaction: Interaction, user_id: str = SlashOption(description="User ID", required=True), rank: str = SlashOption(description="Rank", choices=list(RANKS.keys()), required=True), reason: str = SlashOption(description="Reason", required=False)):
+    if not is_group_manager(interaction.user.id):
+        await interaction.response.send_message(embed=Embed(title="❌ Permission Denied", description="Only Group Managers can use this!", color=0xED4245))
         return
     
     await interaction.response.defer()
-    
     try:
         user_id = int(user_id)
         user = await bot.fetch_user(user_id)
     except:
-        await interaction.followup.send(embed=Embed(title="❌ Error", description="Invalid user ID!", color=0xED4245))
-        return
+        return await interaction.followup.send(embed=Embed(title="❌ Error", description="Invalid user ID!", color=0xED4245))
     
-    # Set global rank
     set_global_rank(user_id, rank, interaction.user.id, reason)
     
-    # Update the user's rank in all servers they're in
-    updated_servers = 0
+    updated = 0
     for guild in bot.guilds:
         try:
             member = await guild.fetch_member(user_id)
             if member:
-                # Update local member record
-                db.execute("UPDATE members SET global_rank = ? WHERE user_id = ? AND guild_id = ?", 
-                          (rank, user_id, guild.id))
+                db.execute("UPDATE members SET global_rank = ? WHERE user_id = ? AND guild_id = ?", (rank, user_id, guild.id))
                 db.commit()
-                updated_servers += 1
+                updated += 1
         except:
             pass
     
-    # Get rank details
     rank_data = RANKS.get(rank, {"color": 0x888888, "emoji": "👤"})
-    
-    embed = Embed(
-        title=f"{rank_data['emoji']} Global Rank Updated!",
-        description=f"**User:** {user.mention}\n"
-                   f"**Rank:** {rank}\n"
-                   f"**Reason:** {reason or 'No reason provided'}\n"
-                   f"**Updated in:** {updated_servers} servers",
-        color=rank_data['color'],
-        timestamp=datetime.now()
-    )
-    embed.set_footer(text=f"Assigned by {interaction.user.display_name}")
-    
+    embed = Embed(title=f"{rank_data['emoji']} Global Rank Updated!", description=f"**User:** {user.mention}\n**Rank:** {rank}\n**Reason:** {reason or 'None'}\n**Updated:** {updated} servers", color=rank_data['color'], timestamp=datetime.now())
     await interaction.followup.send(embed=embed)
 
-@bot.slash_command(name="global_rank_info", description="🌍 Check a user's global rank")
-async def global_rank_info(
-    interaction: Interaction,
-    user_id: str = SlashOption(description="User ID to check", required=False)
-):
-    """Check a user's global rank"""
-    
+@bot.slash_command(name="global_rank_info", description="🌍 Check user's global rank")
+async def global_rank_info(interaction: Interaction, user_id: str = SlashOption(description="User ID", required=False)):
     if not user_id:
         user_id = str(interaction.user.id)
-    
     try:
         user_id = int(user_id)
         user = await bot.fetch_user(user_id)
     except:
-        await interaction.response.send_message(embed=Embed(title="❌ Error", description="Invalid user ID!", color=0xED4245))
-        return
+        return await interaction.response.send_message(embed=Embed(title="❌ Error", description="Invalid user ID!", color=0xED4245))
     
     rank_data = get_global_rank(user_id)
     rank_info = RANKS.get(rank_data['rank'], {"color": 0x888888, "emoji": "👤"})
-    
+    embed = Embed(title=f"{rank_info['emoji']} Global Rank", color=rank_info['color'])
+    embed.set_thumbnail(url=user.display_avatar.url)
+    embed.add_field(name="User", value=f"{user.mention}", inline=False)
+    embed.add_field(name="Rank", value=f"**{rank_data['rank']}**", inline=True)
+    if rank_data['assigned_at']:
+        embed.add_field(name="Assigned", value=rank_data['assigned_at'], inline=True)
+    if rank_data['reason']:
+        embed.add_field(name="Reason", value=rank_data['reason'], inline=False)
+    await interaction.response.send_message(embed=embed)
+
+# =============================================================================
+# TICKET SYSTEM
+# =============================================================================
+
+@bot.slash_command(name="ticket_panel", description="🎫 Create ticket panel (Admin only)")
+@commands.has_permissions(administrator=True)
+async def ticket_panel(interaction: Interaction, channel: TextChannel = SlashOption(description="Channel for panel", required=True)):
     embed = Embed(
-        title=f"{rank_info['emoji']} Global Rank Info",
-        color=rank_info['color'],
+        title="🎫 Support Tickets",
+        description="Click the button below to create a support ticket.\n\n"
+                   "**How it works:**\n"
+                   "1. Click 'Create Ticket'\n"
+                   "2. Fill in the form\n"
+                   "3. Staff will assist you\n"
+                   "4. Ticket will be closed when resolved",
+        color=0x5865F2,
         timestamp=datetime.now()
     )
-    embed.set_thumbnail(url=user.display_avatar.url)
-    embed.add_field(name="👤 User", value=f"{user.mention} ({user.name})", inline=False)
-    embed.add_field(name="📊 Global Rank", value=f"**{rank_data['rank']}**", inline=True)
-    embed.add_field(name="📅 Assigned At", value=rank_data['assigned_at'] or "Never", inline=True)
-    if rank_data['assigned_by']:
-        try:
-            assigned_by = await bot.fetch_user(rank_data['assigned_by'])
-            embed.add_field(name="👑 Assigned By", value=assigned_by.mention, inline=True)
-        except:
-            pass
-    if rank_data['reason']:
-        embed.add_field(name="📝 Reason", value=rank_data['reason'], inline=False)
+    embed.set_footer(text=f"{interaction.guild.name} Support")
     
+    view = TicketView()
+    await channel.send(embed=embed, view=view)
+    
+    embed = Embed(title="✅ Ticket Panel Created", description=f"Ticket panel created in {channel.mention}!", color=0x57F287)
     await interaction.response.send_message(embed=embed)
 
-@bot.slash_command(name="global_rank_list", description="🌍 List all users with global ranks")
-@commands.is_owner()
-async def global_rank_list(interaction: Interaction):
-    """List all users with global ranks"""
-    
-    results = db.fetchall("SELECT * FROM global_ranks WHERE rank != 'Member' ORDER BY rank, assigned_at")
-    
-    if not results:
-        await interaction.response.send_message(embed=Embed(title="📋 Global Ranks", description="No users with custom global ranks!", color=0x5865F2))
+@bot.slash_command(name="ticket_setup", description="🎫 Setup ticket system (Admin only)")
+@commands.has_permissions(administrator=True)
+async def ticket_setup(interaction: Interaction, category: CategoryChannel = SlashOption(description="Category for tickets", required=True), log_channel: TextChannel = SlashOption(description="Channel for logs", required=True)):
+    db.execute("UPDATE guilds SET ticket_category = ?, ticket_log = ? WHERE id = ?", (category.id, log_channel.id, interaction.guild_id))
+    db.commit()
+    embed = Embed(title="✅ Ticket System Setup", description=f"Category: {category.mention}\nLog Channel: {log_channel.mention}", color=0x57F287)
+    await interaction.response.send_message(embed=embed)
+
+@bot.slash_command(name="ticket_close", description="❌ Close current ticket")
+async def ticket_close(interaction: Interaction):
+    ticket = db.fetchone("SELECT * FROM tickets WHERE channel_id = ? AND status = 'open'", (interaction.channel_id,))
+    if not ticket:
+        await interaction.response.send_message(embed=Embed(title="❌ Error", description="This is not a ticket channel!", color=0xED4245))
         return
     
-    embed = Embed(title="📋 Global Ranks List", color=0x5865F2, timestamp=datetime.now())
+    view = ConfirmView()
+    embed = Embed(title="⚠️ Close Ticket", description="Are you sure?", color=0xFEE75C)
+    await interaction.response.send_message(embed=embed, view=view)
+    await view.wait()
+    if not view.value:
+        return
     
-    for row in results[:20]:
-        try:
-            user = await bot.fetch_user(row['user_id'])
-            rank_data = RANKS.get(row['rank'], {"emoji": "👤"})
-            embed.add_field(
-                name=f"{rank_data['emoji']} {row['rank']}",
-                value=f"{user.mention} ({user.name})",
-                inline=True
-            )
-        except:
-            pass
+    # Generate transcript
+    transcript = f"Ticket #{ticket['id']}\n"
+    transcript += f"Created by: {ticket['creator_id']}\n"
+    transcript += f"Topic: {ticket['topic']}\n"
+    transcript += f"Closed by: {interaction.user.id}\n"
+    transcript += f"Closed at: {datetime.now().isoformat()}\n\n--- Messages ---\n"
     
-    if len(results) > 20:
-        embed.set_footer(text=f"And {len(results) - 20} more users...")
+    async for msg in interaction.channel.history(limit=200):
+        transcript += f"{msg.author.display_name}: {msg.content}\n"
     
+    db.execute("UPDATE tickets SET status = 'closed', closed_at = ?, transcript = ? WHERE id = ?",
+               (datetime.now().isoformat(), transcript, ticket['id']))
+    db.commit()
+    
+    await interaction.channel.send(embed=Embed(title="📄 Transcript", description=f"```\n{transcript[:1900]}\n```", color=0x5865F2))
+    await interaction.response.send_message("⏳ Channel will be deleted in 10 seconds...")
+    await asyncio.sleep(10)
+    await interaction.channel.delete()
+
+# =============================================================================
+# GIVEAWAY COMMANDS
+# =============================================================================
+
+@bot.slash_command(name="giveaway_start", description="🎁 Start a giveaway (Admin only)")
+@commands.has_permissions(administrator=True)
+async def giveaway_start(interaction: Interaction, channel: TextChannel = SlashOption(description="Channel", required=True), prize: str = SlashOption(description="Prize", required=True), duration: int = SlashOption(description="Duration in minutes", required=True), winners: int = SlashOption(description="Number of winners", required=True)):
+    end_time = datetime.now() + timedelta(minutes=duration)
+    
+    embed = Embed(
+        title="🎁 Giveaway!",
+        description=f"**Prize:** {prize}\n"
+                   f"**Winners:** {winners}\n"
+                   f"**Ends:** <t:{int(end_time.timestamp())}:R>\n\n"
+                   f"Click the button below to enter!",
+        color=0x57F287,
+        timestamp=datetime.now()
+    )
+    
+    view = GiveawayView(None)
+    msg = await channel.send(embed=embed, view=view)
+    
+    db.execute("INSERT INTO giveaways (guild_id, channel_id, message_id, prize, winners, end_time) VALUES (?, ?, ?, ?, ?, ?)",
+               (interaction.guild_id, channel.id, msg.id, prize, winners, end_time.isoformat()))
+    db.commit()
+    
+    embed = Embed(title="✅ Giveaway Started", description=f"Giveaway in {channel.mention}!", color=0x57F287)
+    await interaction.response.send_message(embed=embed)
+
+@bot.slash_command(name="giveaway_end", description="🎁 End giveaway early (Admin only)")
+@commands.has_permissions(administrator=True)
+async def giveaway_end(interaction: Interaction, message_id: str = SlashOption(description="Giveaway message ID", required=True)):
+    db.execute("UPDATE giveaways SET ended = 1 WHERE message_id = ? AND guild_id = ?", (message_id, interaction.guild_id))
+    db.commit()
+    embed = Embed(title="✅ Giveaway Ended", description="Giveaway has been ended early!", color=0x57F287)
     await interaction.response.send_message(embed=embed)
 
 # =============================================================================
-# SLASH COMMANDS - ADMIN
+# ADMIN COMMANDS
 # =============================================================================
 
-@bot.slash_command(name="add_admin", description="👑 Add a guild admin (Server Owner only)")
+@bot.slash_command(name="add_admin", description="👑 Add guild admin (Admin only)")
 @commands.has_permissions(administrator=True)
-async def add_admin(interaction: Interaction, user: Member = SlashOption(description="User to make admin", required=True)):
+async def add_admin(interaction: Interaction, user: Member = SlashOption(description="User", required=True)):
     if user == interaction.user:
         await interaction.response.send_message(embed=Embed(title="❌ Error", description="You can't add yourself!", color=0xED4245))
         return
-    add_admin(user.id, interaction.guild_id, interaction.user.id)
-    embed = Embed(title="✅ Admin Added", description=f"{user.mention} is now a guild admin!", color=0x57F287)
+    db.execute("INSERT OR IGNORE INTO guild_admins (user_id, guild_id, added_by, timestamp) VALUES (?, ?, ?, ?)",
+               (user.id, interaction.guild_id, interaction.user.id, datetime.now().isoformat()))
+    db.commit()
+    embed = Embed(title="✅ Admin Added", description=f"{user.mention} is now an admin!", color=0x57F287)
     await interaction.response.send_message(embed=embed)
 
-@bot.slash_command(name="remove_admin", description="👑 Remove a guild admin (Server Owner only)")
+@bot.slash_command(name="remove_admin", description="👑 Remove guild admin (Admin only)")
 @commands.has_permissions(administrator=True)
-async def remove_admin(interaction: Interaction, user: Member = SlashOption(description="User to remove", required=True)):
+async def remove_admin(interaction: Interaction, user: Member = SlashOption(description="User", required=True)):
     if user == interaction.user:
         await interaction.response.send_message(embed=Embed(title="❌ Error", description="You can't remove yourself!", color=0xED4245))
         return
-    remove_admin(user.id, interaction.guild_id)
-    embed = Embed(title="✅ Admin Removed", description=f"{user.mention} is no longer a guild admin!", color=0x57F287)
+    db.execute("DELETE FROM guild_admins WHERE user_id = ? AND guild_id = ?", (user.id, interaction.guild_id))
+    db.commit()
+    embed = Embed(title="✅ Admin Removed", description=f"{user.mention} is no longer an admin!", color=0x57F287)
     await interaction.response.send_message(embed=embed)
 
-@bot.slash_command(name="admins", description="👑 List all guild admins")
+@bot.slash_command(name="admins", description="👑 List guild admins")
 @commands.has_permissions(administrator=True)
 async def list_admins(interaction: Interaction):
     results = db.fetchall("SELECT * FROM guild_admins WHERE guild_id = ?", (interaction.guild_id,))
-    
     if not results:
-        await interaction.response.send_message(embed=Embed(title="👑 Admins", description="No admins set!", color=0x5865F2))
-        return
-    
+        embed = Embed(title="👑 Admins", description="No admins set!", color=0x5865F2)
+        return await interaction.response.send_message(embed=embed)
     embed = Embed(title=f"👑 Admins - {interaction.guild.name}", color=0x5865F2, timestamp=datetime.now())
-    
     for row in results:
         user = interaction.guild.get_member(row['user_id'])
         if user:
-            embed.add_field(name=user.display_name, value=f"ID: {user.id}\nAdded: {row['timestamp']}", inline=False)
-    
+            embed.add_field(name=user.display_name, value=f"ID: {user.id}", inline=False)
     await interaction.response.send_message(embed=embed)
 
 # =============================================================================
-# SLASH COMMANDS - MODERATION (Admin Only)
+# MODERATION COMMANDS (Admin Only)
 # =============================================================================
 
-def is_guild_admin(interaction):
-    if interaction.user.id in BOT_OWNER_IDS:
-        return True
-    return is_admin(interaction.user.id, interaction.guild_id)
-
-@bot.slash_command(name="ban", description="🔨 Ban a member (Admin only)")
+@bot.slash_command(name="ban", description="🔨 Ban member (Admin only)")
 async def ban(interaction: Interaction, member: Member = SlashOption(description="Member", required=True), reason: str = SlashOption(description="Reason", required=False)):
-    if not is_guild_admin(interaction):
-        await interaction.response.send_message(embed=Embed(title="❌ Permission Denied", description="Only guild admins can use this!", color=0xED4245))
-        return
-    if member == interaction.user:
-        await interaction.response.send_message(embed=Embed(title="❌ Error", description="You can't ban yourself!", color=0xED4245))
+    if not is_guild_admin(interaction.user.id, interaction.guild_id):
+        await interaction.response.send_message(embed=Embed(title="❌ Permission Denied", description="Admins only!", color=0xED4245))
         return
     await member.ban(reason=reason or "No reason")
-    embed = Embed(title="✅ Banned", description=f"{member.mention} was banned\n**Reason:** {reason or 'No reason'}", color=0x57F287)
+    embed = Embed(title="✅ Banned", description=f"{member.mention} banned", color=0x57F287)
     await interaction.response.send_message(embed=embed)
 
-@bot.slash_command(name="kick", description="👢 Kick a member (Admin only)")
+@bot.slash_command(name="kick", description="👢 Kick member (Admin only)")
 async def kick(interaction: Interaction, member: Member = SlashOption(description="Member", required=True), reason: str = SlashOption(description="Reason", required=False)):
-    if not is_guild_admin(interaction):
-        await interaction.response.send_message(embed=Embed(title="❌ Permission Denied", description="Only guild admins can use this!", color=0xED4245))
-        return
-    if member == interaction.user:
-        await interaction.response.send_message(embed=Embed(title="❌ Error", description="You can't kick yourself!", color=0xED4245))
+    if not is_guild_admin(interaction.user.id, interaction.guild_id):
+        await interaction.response.send_message(embed=Embed(title="❌ Permission Denied", description="Admins only!", color=0xED4245))
         return
     await member.kick(reason=reason or "No reason")
-    embed = Embed(title="✅ Kicked", description=f"{member.mention} was kicked\n**Reason:** {reason or 'No reason'}", color=0x57F287)
+    embed = Embed(title="✅ Kicked", description=f"{member.mention} kicked", color=0x57F287)
     await interaction.response.send_message(embed=embed)
 
 @bot.slash_command(name="clear", description="🧹 Clear messages (Admin only)")
 @commands.has_permissions(manage_messages=True)
 async def clear(interaction: Interaction, amount: int = SlashOption(description="Number of messages", min_value=1, max_value=100, required=True)):
-    if not is_guild_admin(interaction):
-        await interaction.response.send_message(embed=Embed(title="❌ Permission Denied", description="Only guild admins can use this!", color=0xED4245))
+    if not is_guild_admin(interaction.user.id, interaction.guild_id):
+        await interaction.response.send_message(embed=Embed(title="❌ Permission Denied", description="Admins only!", color=0xED4245))
         return
     await interaction.response.defer()
     deleted = await interaction.channel.purge(limit=amount)
     embed = Embed(title="✅ Cleared", description=f"**{len(deleted)}** messages deleted", color=0x57F287)
     await interaction.followup.send(embed=embed)
 
-@bot.slash_command(name="warn", description="⚠️ Warn a member (Admin only)")
+@bot.slash_command(name="warn", description="⚠️ Warn member (Admin only)")
 async def warn(interaction: Interaction, member: Member = SlashOption(description="Member", required=True), reason: str = SlashOption(description="Reason", required=True)):
-    if not is_guild_admin(interaction):
-        await interaction.response.send_message(embed=Embed(title="❌ Permission Denied", description="Only guild admins can use this!", color=0xED4245))
+    if not is_guild_admin(interaction.user.id, interaction.guild_id):
+        await interaction.response.send_message(embed=Embed(title="❌ Permission Denied", description="Admins only!", color=0xED4245))
         return
     db.execute("INSERT INTO warnings (user_id, guild_id, moderator_id, reason, timestamp) VALUES (?, ?, ?, ?, ?)",
-              (member.id, interaction.guild_id, interaction.user.id, reason, datetime.now().isoformat()))
+               (member.id, interaction.guild_id, interaction.user.id, reason, datetime.now().isoformat()))
     db.execute("UPDATE members SET warnings = warnings + 1 WHERE user_id = ? AND guild_id = ?", (member.id, interaction.guild_id))
     db.commit()
-    embed = Embed(title="⚠️ Warning Issued", description=f"{member.mention} was warned\n**Reason:** {reason}", color=0xFEE75C)
+    embed = Embed(title="⚠️ Warning Issued", description=f"{member.mention} warned\n**Reason:** {reason}", color=0xFEE75C)
     await interaction.response.send_message(embed=embed)
 
 @bot.slash_command(name="warnings", description="⚠️ View warnings (Admin only)")
 async def view_warnings(interaction: Interaction, member: Member = SlashOption(description="Member", required=True)):
-    if not is_guild_admin(interaction):
-        await interaction.response.send_message(embed=Embed(title="❌ Permission Denied", description="Only guild admins can use this!", color=0xED4245))
+    if not is_guild_admin(interaction.user.id, interaction.guild_id):
+        await interaction.response.send_message(embed=Embed(title="❌ Permission Denied", description="Admins only!", color=0xED4245))
         return
     warnings = db.fetchall("SELECT * FROM warnings WHERE user_id = ? AND guild_id = ? AND is_active = 1 ORDER BY timestamp DESC", (member.id, interaction.guild_id))
     if not warnings:
@@ -991,56 +1071,74 @@ async def view_warnings(interaction: Interaction, member: Member = SlashOption(d
         embed.add_field(name=f"Warning #{i}", value=f"Reason: {w['reason']}\nModerator: {mod.mention if mod else 'Unknown'}", inline=False)
     await interaction.response.send_message(embed=embed)
 
-@bot.slash_command(name="mute", description="🔇 Mute a member (Admin only)")
+@bot.slash_command(name="mute", description="🔇 Mute member (Admin only)")
 async def mute(interaction: Interaction, member: Member = SlashOption(description="Member", required=True), duration: int = SlashOption(description="Minutes", min_value=1, max_value=40320, required=True), reason: str = SlashOption(description="Reason", required=False)):
-    if not is_guild_admin(interaction):
-        await interaction.response.send_message(embed=Embed(title="❌ Permission Denied", description="Only guild admins can use this!", color=0xED4245))
-        return
-    if member == interaction.user:
-        await interaction.response.send_message(embed=Embed(title="❌ Error", description="You can't mute yourself!", color=0xED4245))
+    if not is_guild_admin(interaction.user.id, interaction.guild_id):
+        await interaction.response.send_message(embed=Embed(title="❌ Permission Denied", description="Admins only!", color=0xED4245))
         return
     await member.timeout(timedelta(minutes=duration), reason=reason or "No reason")
-    embed = Embed(title="✅ Muted", description=f"{member.mention} muted for {duration} minutes\n**Reason:** {reason or 'No reason'}", color=0x57F287)
+    embed = Embed(title="✅ Muted", description=f"{member.mention} muted for {duration} minutes", color=0x57F287)
     await interaction.response.send_message(embed=embed)
 
-@bot.slash_command(name="audit", description="📋 View audit log (Admin only)")
+@bot.slash_command(name="audit", description="📋 Audit log (Admin only)")
 @commands.has_permissions(administrator=True)
 async def audit(interaction: Interaction):
-    if not is_guild_admin(interaction):
-        await interaction.response.send_message(embed=Embed(title="❌ Permission Denied", description="Only guild admins can use this!", color=0xED4245))
+    if not is_guild_admin(interaction.user.id, interaction.guild_id):
+        await interaction.response.send_message(embed=Embed(title="❌ Permission Denied", description="Admins only!", color=0xED4245))
         return
-    
     logs = db.fetchall("SELECT * FROM audit_log WHERE guild_id = ? ORDER BY timestamp DESC LIMIT 10", (interaction.guild_id,))
-    
     if not logs:
-        await interaction.response.send_message(embed=Embed(title="📋 Audit Log", description="No logs found!", color=0x5865F2))
-        return
-    
+        embed = Embed(title="📋 Audit Log", description="No logs found!", color=0x5865F2)
+        return await interaction.response.send_message(embed=embed)
     embed = Embed(title=f"📋 Audit Log - {interaction.guild.name}", color=0x5865F2, timestamp=datetime.now())
-    
     for log in logs:
         mod = interaction.guild.get_member(log['moderator_id'])
-        embed.add_field(
-            name=f"{log['action']} - {log['timestamp']}",
-            value=f"**Mod:** {mod.mention if mod else 'Unknown'}\n**Details:** {log['details']}",
-            inline=False
-        )
-    
+        embed.add_field(name=f"{log['action']} - {log['timestamp']}", value=f"**Mod:** {mod.mention if mod else 'Unknown'}\n**Details:** {log['details']}", inline=False)
     await interaction.response.send_message(embed=embed)
 
 # =============================================================================
-# SLASH COMMANDS - GLOBAL (Owner Only)
+# RESTART COMMAND
 # =============================================================================
 
-@bot.slash_command(name="global_ban", description="🌍 Ban user from ALL servers (Owner only)")
-@commands.is_owner()
+@bot.slash_command(name="restart", description="🔄 Restart the bot (Group Management only)")
+async def restart_bot(interaction: Interaction):
+    if not is_group_manager(interaction.user.id):
+        await interaction.response.send_message(embed=Embed(title="❌ Permission Denied", description="Only Group Managers can restart the bot!", color=0xED4245))
+        return
+    
+    view = ConfirmView()
+    embed = Embed(title="🔄 Restart Bot", description="Are you sure you want to restart the bot?\nThis may take 30-60 seconds.", color=0xFEE75C)
+    await interaction.response.send_message(embed=embed, view=view)
+    await view.wait()
+    
+    if not view.value:
+        return
+    
+    embed = Embed(title="🔄 Restarting...", description="Bot is restarting. Please wait 30-60 seconds.", color=0x57F287)
+    await interaction.channel.send(embed=embed)
+    
+    # Create backup before restart
+    recovery.create_backup()
+    
+    # Exit to let the hosting platform restart
+    sys.exit(0)
+
+# =============================================================================
+# GLOBAL COMMANDS (Group Management Only)
+# =============================================================================
+
+@bot.slash_command(name="global_ban", description="🌍 Ban user from ALL servers (Group Management only)")
 async def global_ban(interaction: Interaction, user_id: str = SlashOption(description="User ID", required=True), reason: str = SlashOption(description="Reason", required=True)):
+    if not is_group_manager(interaction.user.id):
+        await interaction.response.send_message(embed=Embed(title="❌ Permission Denied", description="Only Group Managers can use this!", color=0xED4245))
+        return
+    
     await interaction.response.defer()
     try:
         user_id = int(user_id)
         user = await bot.fetch_user(user_id)
     except:
-        return await interaction.followup.send(embed=Embed(title="❌ Error", description="Invalid user ID", color=0xED4245))
+        return await interaction.followup.send(embed=Embed(title="❌ Error", description="Invalid user ID!", color=0xED4245))
     
     view = ConfirmView()
     embed = Embed(title="⚠️ Global Ban", description=f"Ban {user.mention} from ALL {len(bot.guilds)} servers?\n**Reason:** {reason}", color=0xFEE75C)
@@ -1050,7 +1148,7 @@ async def global_ban(interaction: Interaction, user_id: str = SlashOption(descri
         return
     
     db.execute("INSERT INTO global_bans (user_id, reason, issuer_id, timestamp) VALUES (?, ?, ?, ?)",
-              (user_id, reason, interaction.user.id, datetime.now().isoformat()))
+               (user_id, reason, interaction.user.id, datetime.now().isoformat()))
     db.commit()
     
     count = 0
@@ -1062,17 +1160,20 @@ async def global_ban(interaction: Interaction, user_id: str = SlashOption(descri
         except:
             pass
     
-    embed = Embed(title="✅ Global Ban Complete", description=f"{user.mention} banned from {count} servers\n**Reason:** {reason}", color=0x57F287)
+    embed = Embed(title="✅ Global Ban Complete", description=f"{user.mention} banned from {count} servers", color=0x57F287)
     await interaction.channel.send(embed=embed)
 
-@bot.slash_command(name="global_unban", description="🌍 Remove global ban (Owner only)")
-@commands.is_owner()
+@bot.slash_command(name="global_unban", description="🌍 Remove global ban (Group Management only)")
 async def global_unban(interaction: Interaction, user_id: str = SlashOption(description="User ID", required=True)):
+    if not is_group_manager(interaction.user.id):
+        await interaction.response.send_message(embed=Embed(title="❌ Permission Denied", description="Only Group Managers can use this!", color=0xED4245))
+        return
+    
     try:
         user_id = int(user_id)
         user = await bot.fetch_user(user_id)
     except:
-        return await interaction.response.send_message(embed=Embed(title="❌ Error", description="Invalid user ID", color=0xED4245))
+        return await interaction.response.send_message(embed=Embed(title="❌ Error", description="Invalid user ID!", color=0xED4245))
     
     db.execute("UPDATE global_bans SET is_active = 0 WHERE user_id = ?", (user_id,))
     db.commit()
@@ -1088,15 +1189,18 @@ async def global_unban(interaction: Interaction, user_id: str = SlashOption(desc
     embed = Embed(title="✅ Global Unban Complete", description=f"{user.mention} unbanned from {count} servers", color=0x57F287)
     await interaction.response.send_message(embed=embed)
 
-@bot.slash_command(name="global_kick", description="👢 Kick user from ALL servers (Owner only)")
-@commands.is_owner()
+@bot.slash_command(name="global_kick", description="👢 Kick user from ALL servers (Group Management only)")
 async def global_kick(interaction: Interaction, user_id: str = SlashOption(description="User ID", required=True), reason: str = SlashOption(description="Reason", required=True)):
+    if not is_group_manager(interaction.user.id):
+        await interaction.response.send_message(embed=Embed(title="❌ Permission Denied", description="Only Group Managers can use this!", color=0xED4245))
+        return
+    
     await interaction.response.defer()
     try:
         user_id = int(user_id)
         user = await bot.fetch_user(user_id)
     except:
-        return await interaction.followup.send(embed=Embed(title="❌ Error", description="Invalid user ID", color=0xED4245))
+        return await interaction.followup.send(embed=Embed(title="❌ Error", description="Invalid user ID!", color=0xED4245))
     
     view = ConfirmView()
     embed = Embed(title="⚠️ Global Kick", description=f"Kick {user.mention} from ALL {len(bot.guilds)} servers?\n**Reason:** {reason}", color=0xFEE75C)
@@ -1114,12 +1218,15 @@ async def global_kick(interaction: Interaction, user_id: str = SlashOption(descr
         except:
             pass
     
-    embed = Embed(title="✅ Global Kick Complete", description=f"{user.mention} kicked from {count} servers\n**Reason:** {reason}", color=0x57F287)
+    embed = Embed(title="✅ Global Kick Complete", description=f"{user.mention} kicked from {count} servers", color=0x57F287)
     await interaction.channel.send(embed=embed)
 
-@bot.slash_command(name="global_announce", description="🌍 Announce to ALL servers (Owner only)")
-@commands.is_owner()
+@bot.slash_command(name="global_announce", description="🌍 Announce to ALL servers (Group Management only)")
 async def global_announce(interaction: Interaction, title: str = SlashOption(description="Title", required=True), content: str = SlashOption(description="Content", required=True), image_url: str = SlashOption(description="Image URL", required=False)):
+    if not is_group_manager(interaction.user.id):
+        await interaction.response.send_message(embed=Embed(title="❌ Permission Denied", description="Only Group Managers can use this!", color=0xED4245))
+        return
+    
     await interaction.response.defer()
     
     view = ConfirmView()
@@ -1152,12 +1259,15 @@ async def global_announce(interaction: Interaction, title: str = SlashOption(des
         except:
             pass
     
-    embed = Embed(title="✅ Global Announcement Complete", description=f"Sent to {count} out of {len(bot.guilds)} servers", color=0x57F287)
+    embed = Embed(title="✅ Global Announcement Complete", description=f"Sent to {count} servers", color=0x57F287)
     await interaction.channel.send(embed=embed)
 
-@bot.slash_command(name="global_dm", description="✉️ DM ALL users (Owner only)")
-@commands.is_owner()
+@bot.slash_command(name="global_dm", description="✉️ DM ALL users (Group Management only)")
 async def global_dm(interaction: Interaction, message: str = SlashOption(description="Message", required=True)):
+    if not is_group_manager(interaction.user.id):
+        await interaction.response.send_message(embed=Embed(title="❌ Permission Denied", description="Only Group Managers can use this!", color=0xED4245))
+        return
+    
     await interaction.response.defer()
     
     view = ConfirmView()
@@ -1188,68 +1298,69 @@ async def global_dm(interaction: Interaction, message: str = SlashOption(descrip
     embed = Embed(title="✅ Global DM Complete", description=f"Sent to {sent} users\nFailed: {failed}", color=0x57F287)
     await interaction.channel.send(embed=embed)
 
-@bot.slash_command(name="bot_stats", description="📊 View bot statistics (Owner only)")
-@commands.is_owner()
+@bot.slash_command(name="bot_stats", description="📊 View bot statistics (Group Management only)")
 async def bot_stats(interaction: Interaction):
-    uptime = datetime.now() - START_TIME
-    uptime_str = str(uptime).split('.')[0]
+    if not is_group_manager(interaction.user.id):
+        await interaction.response.send_message(embed=Embed(title="❌ Permission Denied", description="Only Group Managers can use this!", color=0xED4245))
+        return
     
+    uptime = datetime.now() - START_TIME
     embed = Embed(title="🤖 Bot Statistics", color=0x5865F2, timestamp=datetime.now())
     embed.add_field(name="📦 Version", value=f"**{VERSION}**", inline=True)
-    embed.add_field(name="⏰ Uptime", value=f"**{uptime_str}**", inline=True)
+    embed.add_field(name="⏰ Uptime", value=f"**{str(uptime).split('.')[0]}**", inline=True)
     embed.add_field(name="🌍 Servers", value=f"**{len(bot.guilds)}**", inline=True)
     embed.add_field(name="👥 Users", value=f"**{sum(g.member_count for g in bot.guilds)}**", inline=True)
     embed.add_field(name="🔑 Recovery Code", value=f"**{recovery.recovery_code}**", inline=True)
     embed.add_field(name="💾 Backups", value=f"**{len(os.listdir(recovery.backup_path)) if os.path.exists(recovery.backup_path) else 0}**", inline=True)
-    
     await interaction.response.send_message(embed=embed)
 
-@bot.slash_command(name="recovery_code", description="🔑 Generate new recovery code (Owner only)")
-@commands.is_owner()
+@bot.slash_command(name="recovery_code", description="🔑 Generate new recovery code (Group Management only)")
 async def generate_recovery(interaction: Interaction):
+    if not is_group_manager(interaction.user.id):
+        await interaction.response.send_message(embed=Embed(title="❌ Permission Denied", description="Only Group Managers can use this!", color=0xED4245))
+        return
+    
     recovery.recovery_code = recovery.generate_recovery_code()
-    embed = Embed(title="🔑 New Recovery Code Generated", description=f"**{recovery.recovery_code}**\n\nThis code helps prevent bot crashes and enables auto-recovery.", color=0x57F287)
+    embed = Embed(title="🔑 New Recovery Code Generated", description=f"**{recovery.recovery_code}**", color=0x57F287)
     await interaction.response.send_message(embed=embed)
 
-@bot.slash_command(name="backup", description="💾 Create manual backup (Owner only)")
-@commands.is_owner()
+@bot.slash_command(name="backup", description="💾 Create manual backup (Group Management only)")
 async def manual_backup(interaction: Interaction):
+    if not is_group_manager(interaction.user.id):
+        await interaction.response.send_message(embed=Embed(title="❌ Permission Denied", description="Only Group Managers can use this!", color=0xED4245))
+        return
+    
     await interaction.response.defer()
     success = recovery.create_backup()
-    if success:
-        embed = Embed(title="✅ Backup Created", description=f"Database backup created successfully!\n**Time:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", color=0x57F287)
-    else:
-        embed = Embed(title="❌ Backup Failed", description="Failed to create backup!", color=0xED4245)
+    embed = Embed(title="✅ Backup Created" if success else "❌ Backup Failed", color=0x57F287 if success else 0xED4245)
     await interaction.followup.send(embed=embed)
 
-@bot.slash_command(name="restore", description="🔄 Restore from latest backup (Owner only)")
-@commands.is_owner()
+@bot.slash_command(name="restore", description="🔄 Restore from backup (Group Management only)")
 async def restore_backup(interaction: Interaction):
+    if not is_group_manager(interaction.user.id):
+        await interaction.response.send_message(embed=Embed(title="❌ Permission Denied", description="Only Group Managers can use this!", color=0xED4245))
+        return
+    
     view = ConfirmView()
-    embed = Embed(title="⚠️ Restore Backup", description="This will restore the database from the latest backup. Continue?", color=0xFEE75C)
+    embed = Embed(title="⚠️ Restore Backup", description="This will restore from latest backup. Continue?", color=0xFEE75C)
     await interaction.response.send_message(embed=embed, view=view)
     await view.wait()
     if not view.value:
         return
     
     success = recovery.restore_backup()
-    if success:
-        embed = Embed(title="✅ Backup Restored", description="Database restored from latest backup successfully!", color=0x57F287)
-    else:
-        embed = Embed(title="❌ Restore Failed", description="No backup found or restore failed!", color=0xED4245)
+    embed = Embed(title="✅ Backup Restored" if success else "❌ Restore Failed", color=0x57F287 if success else 0xED4245)
     await interaction.channel.send(embed=embed)
 
 # =============================================================================
-# SLASH COMMANDS - ECONOMY
+# ECONOMY COMMANDS
 # =============================================================================
 
-@bot.slash_command(name="daily", description="💰 Collect your daily reward!")
+@bot.slash_command(name="daily", description="💰 Collect daily reward!")
 async def daily(interaction: Interaction):
     economy = get_economy(interaction.user.id, interaction.guild_id)
-    last_claim = economy['daily_last_claim']
-    
-    if last_claim:
-        last_time = datetime.fromisoformat(last_claim)
+    if economy['daily_last_claim']:
+        last_time = datetime.fromisoformat(economy['daily_last_claim'])
         if (datetime.now() - last_time).total_seconds() < 86400:
             remaining = 86400 - (datetime.now() - last_time).total_seconds()
             hours = int(remaining // 3600)
@@ -1259,38 +1370,31 @@ async def daily(interaction: Interaction):
     
     amount = random.randint(100, 500)
     add_coins(interaction.user.id, interaction.guild_id, amount)
-    db.execute("UPDATE economy SET daily_last_claim = ? WHERE user_id = ? AND guild_id = ?", 
-              (datetime.now().isoformat(), interaction.user.id, interaction.guild_id))
+    db.execute("UPDATE economy SET daily_last_claim = ? WHERE user_id = ? AND guild_id = ?", (datetime.now().isoformat(), interaction.user.id, interaction.guild_id))
     db.commit()
-    
-    embed = Embed(title="💰 Daily Reward!", description=f"You received **{amount}** coins! 💰\nKeep coming back every day!", color=0x57F287)
+    embed = Embed(title="💰 Daily Reward!", description=f"You received **{amount}** coins!", color=0x57F287)
     await interaction.response.send_message(embed=embed)
 
-@bot.slash_command(name="work", description="💼 Work to earn coins!")
+@bot.slash_command(name="work", description="💼 Work for coins!")
 async def work(interaction: Interaction):
     economy = get_economy(interaction.user.id, interaction.guild_id)
-    last_work = economy['work_last_used']
-    
-    if last_work:
-        last_time = datetime.fromisoformat(last_work)
+    if economy['work_last_used']:
+        last_time = datetime.fromisoformat(economy['work_last_used'])
         if (datetime.now() - last_time).total_seconds() < 3600:
             remaining = 3600 - (datetime.now() - last_time).total_seconds()
             minutes = int(remaining // 60)
-            await interaction.response.send_message(embed=Embed(title="⏳ Cooldown", description=f"Wait **{minutes}** minutes before working again!", color=0xFEE75C))
+            await interaction.response.send_message(embed=Embed(title="⏳ Cooldown", description=f"Wait **{minutes}** minutes!", color=0xFEE75C))
             return
     
-    jobs = ["🧑‍💻 Programmer", "👨‍🍳 Chef", "🧑‍🏫 Teacher", "👨‍⚕️ Doctor", "🧑‍🔬 Scientist", "👨‍🚀 Astronaut", "🧑‍🎨 Artist", "👨‍🏭 Engineer"]
-    job = random.choice(jobs)
+    jobs = ["🧑‍💻 Programmer", "👨‍🍳 Chef", "🧑‍🏫 Teacher", "👨‍⚕️ Doctor", "🧑‍🔬 Scientist", "👨‍🚀 Astronaut"]
     amount = random.randint(20, 80)
     add_coins(interaction.user.id, interaction.guild_id, amount)
-    db.execute("UPDATE economy SET work_last_used = ? WHERE user_id = ? AND guild_id = ?", 
-              (datetime.now().isoformat(), interaction.user.id, interaction.guild_id))
+    db.execute("UPDATE economy SET work_last_used = ? WHERE user_id = ? AND guild_id = ?", (datetime.now().isoformat(), interaction.user.id, interaction.guild_id))
     db.commit()
-    
-    embed = Embed(title="💼 Work Complete!", description=f"You worked as a **{job}** and earned **{amount}** coins!", color=0x57F287)
+    embed = Embed(title="💼 Work Complete!", description=f"You worked as a **{random.choice(jobs)}** and earned **{amount}** coins!", color=0x57F287)
     await interaction.response.send_message(embed=embed)
 
-@bot.slash_command(name="rob", description="🔫 Rob a member for coins!")
+@bot.slash_command(name="rob", description="🔫 Rob a member!")
 async def rob(interaction: Interaction, member: Member = SlashOption(description="Member to rob", required=True)):
     if member == interaction.user:
         await interaction.response.send_message(embed=Embed(title="❌ Error", description="You can't rob yourself!", color=0xED4245))
@@ -1298,18 +1402,17 @@ async def rob(interaction: Interaction, member: Member = SlashOption(description
     
     economy = get_economy(interaction.user.id, interaction.guild_id)
     target_economy = get_economy(member.id, interaction.guild_id)
-    last_rob = economy['rob_cooldown']
     
-    if last_rob:
-        last_time = datetime.fromisoformat(last_rob)
+    if economy['rob_cooldown']:
+        last_time = datetime.fromisoformat(economy['rob_cooldown'])
         if (datetime.now() - last_time).total_seconds() < 3600:
             remaining = 3600 - (datetime.now() - last_time).total_seconds()
             minutes = int(remaining // 60)
-            await interaction.response.send_message(embed=Embed(title="⏳ Cooldown", description=f"Wait **{minutes}** minutes before robbing again!", color=0xFEE75C))
+            await interaction.response.send_message(embed=Embed(title="⏳ Cooldown", description=f"Wait **{minutes}** minutes!", color=0xFEE75C))
             return
     
     if target_economy['coins'] < 10:
-        await interaction.response.send_message(embed=Embed(title="❌ Poor Target", description=f"{member.mention} doesn't have enough coins to rob!", color=0xED4245))
+        await interaction.response.send_message(embed=Embed(title="❌ Poor Target", description=f"{member.mention} doesn't have enough coins!", color=0xED4245))
         return
     
     success = random.random() < 0.6
@@ -1317,19 +1420,18 @@ async def rob(interaction: Interaction, member: Member = SlashOption(description
         amount = random.randint(10, min(50, target_economy['coins']))
         remove_coins(member.id, interaction.guild_id, amount)
         add_coins(interaction.user.id, interaction.guild_id, amount)
-        embed = Embed(title="✅ Robbery Successful!", description=f"You robbed **{amount}** coins from {member.mention}! 🏃💨", color=0x57F287)
+        embed = Embed(title="✅ Robbery Successful!", description=f"You robbed **{amount}** coins from {member.mention}!", color=0x57F287)
     else:
         penalty = random.randint(5, 20)
         remove_coins(interaction.user.id, interaction.guild_id, penalty)
-        embed = Embed(title="❌ Robbery Failed!", description=f"You got caught and lost **{penalty}** coins! 👮", color=0xED4245)
+        embed = Embed(title="❌ Robbery Failed!", description=f"You got caught and lost **{penalty}** coins!", color=0xED4245)
     
-    db.execute("UPDATE economy SET rob_cooldown = ? WHERE user_id = ? AND guild_id = ?", 
-              (datetime.now().isoformat(), interaction.user.id, interaction.guild_id))
+    db.execute("UPDATE economy SET rob_cooldown = ? WHERE user_id = ? AND guild_id = ?", (datetime.now().isoformat(), interaction.user.id, interaction.guild_id))
     db.commit()
     await interaction.response.send_message(embed=embed)
 
-@bot.slash_command(name="balance", description="💰 Check your balance")
-async def balance(interaction: Interaction, member: Member = SlashOption(description="Member to check", required=False)):
+@bot.slash_command(name="balance", description="💰 Check balance")
+async def balance(interaction: Interaction, member: Member = SlashOption(description="Member", required=False)):
     if not member:
         member = interaction.user
     economy = get_economy(member.id, interaction.guild_id)
@@ -1351,58 +1453,88 @@ async def leaderboard_economy(interaction: Interaction):
             embed.add_field(name=f"{emoji} {user.display_name}", value=f"💰 {row['coins']} coins", inline=False)
     await interaction.response.send_message(embed=embed)
 
-@bot.slash_command(name="shop", description="🛒 View and buy items from the shop")
+@bot.slash_command(name="shop", description="🛒 View shop")
 async def shop(interaction: Interaction):
-    items = get_shop_items(interaction.guild_id)
-    
+    items = db.fetchall("SELECT * FROM shop_items WHERE guild_id = ?", (interaction.guild_id,))
     if not items:
-        embed = Embed(title="🛒 Shop", description="The shop is empty! Admins can add items.", color=0x5865F2)
+        embed = Embed(title="🛒 Shop", description="Shop is empty!", color=0x5865F2)
         return await interaction.response.send_message(embed=embed)
-    
     embed = Embed(title=f"🛒 Shop - {interaction.guild.name}", color=0x5865F2)
     for item in items[:10]:
         embed.add_field(name=f"{item['emoji'] or '🛒'} {item['name']}", value=f"💰 {item['price']} coins\n{item['description']}", inline=False)
-    
-    view = ShopView(items, interaction.guild_id, interaction.user.id)
-    await interaction.response.send_message(embed=embed, view=view)
+    await interaction.response.send_message(embed=embed)
 
-@bot.slash_command(name="add_shop_item", description="➕ Add item to shop (Admin only)")
-async def add_shop_item(interaction: Interaction, name: str = SlashOption(description="Item name", required=True), description: str = SlashOption(description="Description", required=True), price: int = SlashOption(description="Price in coins", required=True), emoji: str = SlashOption(description="Emoji", required=False)):
-    if not is_guild_admin(interaction):
-        await interaction.response.send_message(embed=Embed(title="❌ Permission Denied", description="Only guild admins can use this!", color=0xED4245))
-        return
-    add_shop_item(interaction.guild_id, name, description, price, None, emoji or "🛒")
+@bot.slash_command(name="add_shop_item", description="➕ Add shop item (Admin only)")
+@commands.has_permissions(administrator=True)
+async def add_shop_item(interaction: Interaction, name: str = SlashOption(description="Name", required=True), description: str = SlashOption(description="Description", required=True), price: int = SlashOption(description="Price", required=True), emoji: str = SlashOption(description="Emoji", required=False)):
+    db.execute("INSERT INTO shop_items (guild_id, name, description, price, emoji) VALUES (?, ?, ?, ?, ?)",
+               (interaction.guild_id, name, description, price, emoji or "🛒"))
+    db.commit()
     embed = Embed(title="✅ Shop Item Added", description=f"Added **{name}** for {price} coins!", color=0x57F287)
     await interaction.response.send_message(embed=embed)
 
 # =============================================================================
-# SLASH COMMANDS - FUN
+# COUNTRY GAME
 # =============================================================================
 
-@bot.slash_command(name="country", description="🌍 Play the country guessing game!")
+class CountryGuessView(View):
+    def __init__(self, country_data, timeout=30):
+        super().__init__(timeout=timeout)
+        self.country_data = country_data
+        self.answered = False
+    
+    @nextcord.ui.button(label="🌍 Guess Country", style=ButtonStyle.success, emoji="🌍")
+    async def guess_country(self, button, interaction):
+        if self.answered:
+            await interaction.response.send_message("⏳ Already answered!", ephemeral=True)
+            return
+        modal = CountryGuessModal(self.country_data)
+        await interaction.response.send_modal(modal)
+
+class CountryGuessModal(Modal):
+    def __init__(self, country_data):
+        super().__init__(title="🌍 Guess the Country!")
+        self.country_data = country_data
+        self.answer = TextInput(label="What country is this flag from?", placeholder="Type the country name...", style=TextInputStyle.short, required=True)
+        self.add_item(self.answer)
+    
+    async def callback(self, interaction: Interaction):
+        user_answer = self.answer.value.strip().lower()
+        correct_answer = self.country_data['name'].lower()
+        
+        if user_answer == correct_answer:
+            score = db.fetchone("SELECT * FROM country_scores WHERE user_id = ? AND guild_id = ?", (interaction.user.id, interaction.guild_id))
+            if not score:
+                db.execute("INSERT INTO country_scores (user_id, guild_id, score, correct) VALUES (?, ?, 10, 1)", (interaction.user.id, interaction.guild_id))
+            else:
+                db.execute("UPDATE country_scores SET score = score + 10, correct = correct + 1 WHERE user_id = ? AND guild_id = ?", (interaction.user.id, interaction.guild_id))
+            db.commit()
+            embed = Embed(title="✅ Correct!", description=f"It's **{self.country_data['name']}**! You earned 10 points!", color=0x57F287)
+            await interaction.response.send_message(embed=embed)
+        else:
+            db.execute("UPDATE country_scores SET wrong = wrong + 1 WHERE user_id = ? AND guild_id = ?", (interaction.user.id, interaction.guild_id))
+            db.commit()
+            embed = Embed(title="❌ Wrong!", description=f"It was **{self.country_data['name']}**!", color=0xED4245)
+            await interaction.response.send_message(embed=embed)
+
+@bot.slash_command(name="country", description="🌍 Play country guessing game!")
 async def country(interaction: Interaction):
     country = random.choice(COUNTRIES)
-    embed = Embed(
-        title="🌍 Country Guess Game!",
-        description=f"**{country['flag']}** Which country is this flag from?\n\nClick the button below to guess!",
-        color=0x5865F2,
-        timestamp=datetime.now()
-    )
+    embed = Embed(title="🌍 Country Guess Game!", description=f"**{country['flag']}** Which country is this flag from?\n\nClick the button below to guess!", color=0x5865F2, timestamp=datetime.now())
     view = CountryGuessView(country)
     await interaction.response.send_message(embed=embed, view=view)
 
-@bot.slash_command(name="country_score", description="🌍 Check your country game score")
-async def country_score(interaction: Interaction, member: Member = SlashOption(description="Member to check", required=False)):
+@bot.slash_command(name="country_score", description="🌍 Check country score")
+async def country_score(interaction: Interaction, member: Member = SlashOption(description="Member", required=False)):
     if not member:
         member = interaction.user
     score = db.fetchone("SELECT * FROM country_scores WHERE user_id = ? AND guild_id = ?", (member.id, interaction.guild_id))
     if not score:
         embed = Embed(title="🌍 Country Score", description=f"{member.mention} hasn't played yet!", color=0x5865F2)
         return await interaction.response.send_message(embed=embed)
-    
     embed = Embed(title=f"🌍 {member.display_name}'s Country Score", color=0x5865F2)
     embed.set_thumbnail(url=member.display_avatar.url)
-    embed.add_field(name="⭐ Total Score", value=f"**{score['score']}**", inline=True)
+    embed.add_field(name="⭐ Score", value=f"**{score['score']}**", inline=True)
     embed.add_field(name="✅ Correct", value=f"**{score['correct']}**", inline=True)
     embed.add_field(name="❌ Wrong", value=f"**{score['wrong']}**", inline=True)
     await interaction.response.send_message(embed=embed)
@@ -1418,101 +1550,82 @@ async def country_leaderboard(interaction: Interaction):
             embed.add_field(name=f"{emoji} {user.display_name}", value=f"⭐ {row['score']} points", inline=False)
     await interaction.response.send_message(embed=embed)
 
-@bot.slash_command(name="8ball", description="🎱 Ask the magic 8-ball a question!")
-async def eight_ball(interaction: Interaction, question: str = SlashOption(description="Your question", required=True)):
-    responses = [
-        "It is certain.", "It is decidedly so.", "Without a doubt.", "Yes - definitely.",
-        "You may rely on it.", "As I see it, yes.", "Most likely.", "Outlook good.",
-        "Yes.", "Signs point to yes.", "Reply hazy, try again.", "Ask again later.",
-        "Better not tell you now.", "Cannot predict now.", "Concentrate and ask again.",
-        "Don't count on it.", "My reply is no.", "My sources say no.",
-        "Outlook not so good.", "Very doubtful."
-    ]
+# =============================================================================
+# FUN COMMANDS
+# =============================================================================
+
+@bot.slash_command(name="8ball", description="🎱 Ask the magic 8-ball!")
+async def eight_ball(interaction: Interaction, question: str = SlashOption(description="Question", required=True)):
+    responses = ["It is certain.", "It is decidedly so.", "Without a doubt.", "Yes - definitely.", "You may rely on it.", "As I see it, yes.", "Most likely.", "Outlook good.", "Yes.", "Signs point to yes.", "Reply hazy, try again.", "Ask again later.", "Better not tell you now.", "Cannot predict now.", "Concentrate and ask again.", "Don't count on it.", "My reply is no.", "My sources say no.", "Outlook not so good.", "Very doubtful."]
     embed = Embed(title="🎱 8-Ball", description=f"Question: {question}\n\n**Answer:** {random.choice(responses)}", color=0x9B59B6)
     await interaction.response.send_message(embed=embed)
 
 @bot.slash_command(name="flip", description="🪙 Flip a coin!")
 async def flip(interaction: Interaction):
-    result = random.choice(["Heads", "Tails"])
-    embed = Embed(title="🪙 Coin Flip", description=f"**{result}**!", color=0x5865F2)
+    embed = Embed(title="🪙 Coin Flip", description=f"**{random.choice(['Heads', 'Tails'])}**!", color=0x5865F2)
     await interaction.response.send_message(embed=embed)
 
 @bot.slash_command(name="dice", description="🎲 Roll a dice!")
-async def dice(interaction: Interaction, sides: int = SlashOption(description="Number of sides", min_value=2, max_value=100, required=False)):
+async def dice(interaction: Interaction, sides: int = SlashOption(description="Sides", min_value=2, max_value=100, required=False)):
     sides = sides or 6
-    result = random.randint(1, sides)
-    embed = Embed(title="🎲 Dice Roll", description=f"Rolled a **{result}** on a {sides}-sided dice!", color=0x5865F2)
+    embed = Embed(title="🎲 Dice Roll", description=f"Rolled a **{random.randint(1, sides)}** on a {sides}-sided dice!", color=0x5865F2)
     await interaction.response.send_message(embed=embed)
 
-@bot.slash_command(name="joke", description="😂 Get a random joke")
+@bot.slash_command(name="joke", description="😂 Get a joke!")
 async def joke(interaction: Interaction):
-    jokes = [
-        "Why don't scientists trust atoms? Because they make up everything!",
-        "What do you call a fake noodle? An impasta!",
-        "Why did the scarecrow win an award? He was outstanding in his field!",
-        "What do you call a bear with no teeth? A gummy bear!",
-        "Why don't eggs tell jokes? They'd crack each other up!",
-        "What's the best thing about Switzerland? I don't know, but the flag is a big plus!",
-        "Why did the math book look so sad? Because it had too many problems!",
-    ]
+    jokes = ["Why don't scientists trust atoms? Because they make up everything!", "What do you call a fake noodle? An impasta!", "Why did the scarecrow win an award? He was outstanding in his field!", "Why don't eggs tell jokes? They'd crack each other up!"]
     embed = Embed(title="😂 Joke", description=random.choice(jokes), color=0x5865F2)
     await interaction.response.send_message(embed=embed)
 
 @bot.slash_command(name="roast", description="🔥 Roast a member!")
-async def roast(interaction: Interaction, member: Member = SlashOption(description="Member to roast", required=True)):
-    roasts = [
-        f"{member.mention}, you're not stupid; you just have bad luck thinking.",
-        f"{member.mention}, you bring everyone so much joy... when you leave.",
-        f"{member.mention}, you're like a cloud. When you disappear, it's a beautiful day.",
-        f"{member.mention}, you're proof that evolution can go in reverse.",
-        f"{member.mention}, you're the reason God created the middle finger.",
-        f"{member.mention}, you're not the dumbest person in the world, but you better hope they don't die.",
-        f"{member.mention}, you're like a dictionary - you add meaning to my life, but you're also really boring.",
-    ]
+async def roast(interaction: Interaction, member: Member = SlashOption(description="Member", required=True)):
+    roasts = [f"{member.mention}, you're not stupid; you just have bad luck thinking.", f"{member.mention}, you bring everyone so much joy... when you leave.", f"{member.mention}, you're like a cloud. When you disappear, it's a beautiful day."]
     embed = Embed(title="🔥 ROASTED!", description=random.choice(roasts), color=0xED4245)
     await interaction.response.send_message(embed=embed)
 
-@bot.slash_command(name="kiss", description="💋 Kiss a member")
-async def kiss(interaction: Interaction, member: Member = SlashOption(description="Member to kiss", required=True)):
+@bot.slash_command(name="kiss", description="💋 Kiss a member!")
+async def kiss(interaction: Interaction, member: Member = SlashOption(description="Member", required=True)):
     if member == interaction.user:
         await interaction.response.send_message(embed=Embed(title="💋", description="You kissed yourself! That's sad...", color=0x5865F2))
         return
     embed = Embed(title="💋 Kiss!", description=f"{interaction.user.mention} kissed {member.mention}! 😘", color=0xFF6B81)
     await interaction.response.send_message(embed=embed)
 
-@bot.slash_command(name="hug", description="🤗 Hug a member")
-async def hug(interaction: Interaction, member: Member = SlashOption(description="Member to hug", required=True)):
+@bot.slash_command(name="hug", description="🤗 Hug a member!")
+async def hug(interaction: Interaction, member: Member = SlashOption(description="Member", required=True)):
     if member == interaction.user:
         await interaction.response.send_message(embed=Embed(title="🤗", description="You hugged yourself! You need friends.", color=0x5865F2))
         return
     embed = Embed(title="🤗 Hug!", description=f"{interaction.user.mention} hugged {member.mention}! 🫂", color=0x57F287)
     await interaction.response.send_message(embed=embed)
 
-@bot.slash_command(name="pat", description="👋 Pat a member")
-async def pat(interaction: Interaction, member: Member = SlashOption(description="Member to pat", required=True)):
+@bot.slash_command(name="pat", description="👋 Pat a member!")
+async def pat(interaction: Interaction, member: Member = SlashOption(description="Member", required=True)):
     embed = Embed(title="👋 Pat!", description=f"{interaction.user.mention} patted {member.mention} on the head! 👋", color=0x5865F2)
     await interaction.response.send_message(embed=embed)
 
 # =============================================================================
-# SLASH COMMANDS - UTILITY
+# UTILITY COMMANDS
 # =============================================================================
 
-@bot.slash_command(name="ping", description="🏓 Check bot latency")
+@bot.slash_command(name="ping", description="🏓 Check bot latency!")
 async def ping(interaction: Interaction):
-    await interaction.response.send_message(f"🏓 Pong! Latency: **{round(bot.latency * 1000)}ms**")
+    embed = Embed(title="🏓 Pong!", description=f"Latency: **{round(bot.latency * 1000)}ms**", color=0x57F287)
+    await interaction.response.send_message(embed=embed)
 
-@bot.slash_command(name="help", description="📖 Show all commands")
+@bot.slash_command(name="help", description="📖 Show all commands!")
 async def help_command(interaction: Interaction):
     embed = Embed(title="📖 Commands", color=0x5865F2, timestamp=datetime.now())
-    embed.add_field(name="👑 Admin", value="/add_admin, /remove_admin, /admins", inline=False)
-    embed.add_field(name="🛡️ Moderation (Admin Only)", value="/ban, /kick, /clear, /warn, /warnings, /mute, /audit", inline=False)
-    embed.add_field(name="🌍 Global (Owner Only)", value="/global_ban, /global_unban, /global_kick, /global_announce, /global_dm, /bot_stats, /backup, /restore, /recovery_code", inline=False)
-    embed.add_field(name="📊 Global Ranking", value="/global_rank @user [rank], /global_rank_info, /global_rank_list", inline=False)
-    embed.add_field(name="💰 Economy", value="/daily, /work, /rob, /balance, /shop, /leaderboard_economy", inline=False)
+    embed.add_field(name="👑 Group Management", value="/group_add, /group_remove, /group_list", inline=False)
+    embed.add_field(name="🌍 Global", value="/global_rank, /global_rank_info, /global_ban, /global_unban, /global_kick, /global_announce, /global_dm", inline=False)
+    embed.add_field(name="🎫 Tickets", value="/ticket_panel, /ticket_setup, /ticket_close", inline=False)
+    embed.add_field(name="🎁 Giveaways", value="/giveaway_start, /giveaway_end", inline=False)
+    embed.add_field(name="🛡️ Admin", value="/add_admin, /remove_admin, /admins, /ban, /kick, /clear, /warn, /warnings, /mute, /audit", inline=False)
+    embed.add_field(name="💰 Economy", value="/daily, /work, /rob, /balance, /shop, /add_shop_item, /leaderboard_economy", inline=False)
     embed.add_field(name="🌍 Country Game", value="/country, /country_score, /country_leaderboard", inline=False)
     embed.add_field(name="🎮 Fun", value="/8ball, /flip, /dice, /joke, /roast, /kiss, /hug, /pat", inline=False)
-    embed.add_field(name="📊 Utility", value="/ping, /server, /rank, /leaderboard, /setup, /announce, /event_create, /events", inline=False)
-    embed.set_footer(text=f"🇷🇴 Romanian Oversight Bot v{VERSION} | Recovery Code: {recovery.recovery_code}")
+    embed.add_field(name="📊 Utility", value="/ping, /server, /rank, /leaderboard, /setup, /announce, /event_create, /events, /restart, /bot_stats, /backup, /restore, /recovery_code", inline=False)
+    embed.set_footer(text=f"🇷🇴 v{VERSION} | {len(bot.guilds)} servers")
     await interaction.response.send_message(embed=embed)
 
 @bot.slash_command(name="server", description="📊 Server information")
@@ -1530,14 +1643,13 @@ async def server_info(interaction: Interaction):
     await interaction.response.send_message(embed=embed)
 
 @bot.slash_command(name="rank", description="🎯 Check your level")
-async def rank(interaction: Interaction, member: Member = SlashOption(description="Member to check", required=False)):
+async def rank(interaction: Interaction, member: Member = SlashOption(description="Member", required=False)):
     if not member:
         member = interaction.user
     data = get_member(member.id, interaction.guild_id)
     global_rank = get_global_rank(member.id)
     rank_info = RANKS.get(global_rank['rank'], {"color": 0x888888, "emoji": "👤"})
-    
-    embed = Embed(title=f"👤 {member.display_name}'s Profile", color=member.color.value if member.color else 0x5865F2, timestamp=datetime.now())
+    embed = Embed(title=f"👤 {member.display_name}'s Profile", color=member.color.value if member.color else 0x5865F2)
     embed.set_thumbnail(url=member.display_avatar.url)
     embed.add_field(name="📊 Level", value=f"**{data['level']}**", inline=True)
     embed.add_field(name="⭐ XP", value=f"**{data['xp']}**", inline=True)
@@ -1559,7 +1671,7 @@ async def leaderboard(interaction: Interaction):
             embed.add_field(name=f"{emoji} {user.display_name} {rank_info['emoji']}", value=f"Level **{row['level']}** - {row['xp']} XP", inline=False)
     await interaction.response.send_message(embed=embed)
 
-@bot.slash_command(name="setup", description="⚙️ Setup bot channels")
+@bot.slash_command(name="setup", description="⚙️ Setup bot (Admin only)")
 @commands.has_permissions(administrator=True)
 async def setup(interaction: Interaction, type: str = SlashOption(description="Type", choices={"welcome": "welcome", "mod_log": "mod_log", "level": "level", "announcement": "announcement"}, required=True), channel: TextChannel = SlashOption(description="Channel", required=True)):
     db.execute(f"UPDATE guilds SET {type}_channel = ? WHERE id = ?", (channel.id, interaction.guild_id))
@@ -1567,7 +1679,7 @@ async def setup(interaction: Interaction, type: str = SlashOption(description="T
     embed = Embed(title="✅ Setup Complete", description=f"{type.capitalize()} channel set to {channel.mention}", color=0x57F287)
     await interaction.response.send_message(embed=embed)
 
-@bot.slash_command(name="announce", description="📢 Create announcement")
+@bot.slash_command(name="announce", description="📢 Create announcement (Admin only)")
 @commands.has_permissions(administrator=True)
 async def announce(interaction: Interaction, title: str = SlashOption(description="Title", required=True), content: str = SlashOption(description="Content", required=True), image_url: str = SlashOption(description="Image URL", required=False)):
     embed = Embed(title=f"📢 {title}", description=content, color=0xF1C40F, timestamp=datetime.now())
@@ -1579,17 +1691,17 @@ async def announce(interaction: Interaction, title: str = SlashOption(descriptio
         channel = bot.get_channel(channel_id)
         if channel:
             await channel.send(embed=embed)
-            await interaction.response.send_message(embed=Embed(title="✅ Sent", description=f"Announcement sent to {channel.mention}", color=0x57F287))
+            await interaction.response.send_message(embed=Embed(title="✅ Sent", description=f"Sent to {channel.mention}", color=0x57F287))
             return
     await interaction.response.send_message(embed=embed)
 
-@bot.slash_command(name="event_create", description="🎪 Create an event")
+@bot.slash_command(name="event_create", description="🎪 Create event (Admin only)")
 @commands.has_permissions(administrator=True)
-async def event_create(interaction: Interaction, title: str = SlashOption(description="Event title", required=True), description: str = SlashOption(description="Event description", required=True), location: str = SlashOption(description="Location", required=True), max_participants: int = SlashOption(description="Max participants", required=False)):
+async def event_create(interaction: Interaction, title: str = SlashOption(description="Title", required=True), description: str = SlashOption(description="Description", required=True), location: str = SlashOption(description="Location", required=True), max_participants: int = SlashOption(description="Max participants", required=False)):
     db.execute("INSERT INTO events (guild_id, title, description, location, start_time, organizer_id, max_participants, participants, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-              (interaction.guild_id, title, description, location, datetime.now().isoformat(), interaction.user.id, max_participants or 0, json.dumps([]), datetime.now().isoformat()))
+               (interaction.guild_id, title, description, location, datetime.now().isoformat(), interaction.user.id, max_participants or 0, json.dumps([]), datetime.now().isoformat()))
     db.commit()
-    embed = Embed(title="🎪 Event Created", description=f"**{title}**\n{description}\n📍 {location}", color=0x1ABC9C, timestamp=datetime.now())
+    embed = Embed(title="🎪 Event Created", description=f"**{title}**\n{description}\n📍 {location}", color=0x1ABC9C)
     await interaction.response.send_message(embed=embed)
 
 @bot.slash_command(name="events", description="📋 List upcoming events")
@@ -1598,7 +1710,7 @@ async def events(interaction: Interaction):
     if not events:
         embed = Embed(title="📋 No Events", description="No upcoming events", color=0x5865F2)
         return await interaction.response.send_message(embed=embed)
-    embed = Embed(title=f"📋 Upcoming Events - {interaction.guild.name}", color=0x1ABC9C, timestamp=datetime.now())
+    embed = Embed(title=f"📋 Upcoming Events - {interaction.guild.name}", color=0x1ABC9C)
     for event in events:
         organizer = interaction.guild.get_member(event['organizer_id'])
         embed.add_field(name=event['title'], value=f"📍 {event['location']}\n👤 {organizer.mention if organizer else 'Unknown'}", inline=False)
@@ -1615,54 +1727,25 @@ def home():
     return f"""
     <!DOCTYPE html>
     <html>
-    <head>
-        <title>🇷🇴 Romanian Oversight Bot</title>
-        <style>
-            body {{
-                margin: 0;
-                padding: 0;
-                font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                color: white;
-                display: flex;
-                justify-content: center;
-                align-items: center;
-                min-height: 100vh;
-            }}
-            .container {{
-                text-align: center;
-                padding: 40px;
-                background: rgba(255,255,255,0.1);
-                border-radius: 20px;
-                backdrop-filter: blur(10px);
-                box-shadow: 0 8px 32px rgba(0,0,0,0.1);
-                max-width: 600px;
-            }}
-            h1 {{ font-size: 2.5em; margin-bottom: 10px; }}
-            .status {{ font-size: 1.2em; margin: 20px 0; padding: 15px; background: rgba(0,255,0,0.2); border-radius: 10px; display: inline-block; }}
-            .flag {{ font-size: 3em; display: block; margin: 10px 0; }}
-            .stats {{ margin: 20px 0; }}
-            .stat {{ display: inline-block; margin: 0 15px; padding: 10px 20px; background: rgba(255,255,255,0.1); border-radius: 10px; }}
-            .footer {{ margin-top: 30px; opacity: 0.7; font-size: 0.9em; }}
-        </style>
+    <head><title>🇷🇴 Romanian Oversight Bot</title>
+    <style>
+        body {{ margin:0; padding:0; font-family:'Segoe UI',sans-serif; background:linear-gradient(135deg,#667eea 0%,#764ba2 100%); color:white; display:flex; justify-content:center; align-items:center; min-height:100vh; }}
+        .container {{ text-align:center; padding:40px; background:rgba(255,255,255,0.1); border-radius:20px; backdrop-filter:blur(10px); max-width:600px; }}
+        h1 {{ font-size:2.5em; }}
+        .status {{ padding:15px; background:rgba(0,255,0,0.2); border-radius:10px; display:inline-block; }}
+        .stat {{ display:inline-block; margin:0 10px; padding:10px 20px; background:rgba(255,255,255,0.1); border-radius:10px; }}
+        .footer {{ margin-top:30px; opacity:0.7; }}
+    </style>
     </head>
     <body>
         <div class="container">
-            <span class="flag">🇷🇴</span>
-            <h1>Romanian Oversight Bot</h1>
-            <p style="font-size: 1.1em; opacity: 0.9;">Enterprise Grade Discord Bot - v{VERSION}</p>
+            <h1>🇷🇴 Romanian Oversight Bot</h1>
+            <p>Enterprise Grade - v{VERSION}</p>
             <div class="status">✅ Bot is ONLINE</div>
-            <div class="stats">
+            <div style="margin:20px 0;">
                 <div class="stat">🎯 {len(bot.guilds)} Servers</div>
                 <div class="stat">👥 {sum(g.member_count for g in bot.guilds)} Users</div>
                 <div class="stat">🔑 {recovery.recovery_code}</div>
-            </div>
-            <div style="margin: 20px 0;">
-                <span style="background: rgba(255,255,255,0.2); padding: 8px 15px; border-radius: 20px; margin: 5px;">📊 50+ Commands</span>
-                <span style="background: rgba(255,255,255,0.2); padding: 8px 15px; border-radius: 20px; margin: 5px;">💰 Economy</span>
-                <span style="background: rgba(255,255,255,0.2); padding: 8px 15px; border-radius: 20px; margin: 5px;">🌍 Global System</span>
-                <span style="background: rgba(255,255,255,0.2); padding: 8px 15px; border-radius: 20px; margin: 5px;">🎮 Fun Commands</span>
-                <span style="background: rgba(255,255,255,0.2); padding: 8px 15px; border-radius: 20px; margin: 5px;">🔄 Auto-Backup</span>
             </div>
             <div class="footer">Made with ❤️ for the Romanian Community</div>
         </div>
@@ -1697,8 +1780,6 @@ def run_web():
 async def on_application_command_error(interaction: Interaction, error):
     if isinstance(error, commands.MissingPermissions):
         await interaction.response.send_message(embed=Embed(title="❌ Permission Denied", description="You need higher permissions!", color=0xED4245), ephemeral=True)
-    elif isinstance(error, commands.NotOwner):
-        await interaction.response.send_message(embed=Embed(title="❌ Owner Only", description="Only the bot owner can use this!", color=0xED4245), ephemeral=True)
     else:
         await interaction.response.send_message(embed=Embed(title="❌ Error", description=str(error), color=0xED4245), ephemeral=True)
 
@@ -1714,7 +1795,6 @@ def signal_handler(sig, frame):
 if __name__ == "__main__":
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
-    
     thread = Thread(target=run_web, daemon=True)
     thread.start()
     bot.run(TOKEN)
